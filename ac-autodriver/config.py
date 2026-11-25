@@ -149,8 +149,13 @@ class ExternalObstacleConfig:
 # --------------------------------------------------------------------------- #
 @dataclass
 class ControllerConfig:
-    steer_deadzone: float = 0.015    # |steer| below this -> 0 (compensates for game deadzone: raise)
-    trigger_deadzone: float = 0.02
+    steer_deadzone: float = 0.015    # |steer| below this is snapped to 0 (kills stick jitter)
+    trigger_deadzone: float = 0.02   # same for throttle / brake
+    # AC's own gamepad deadzone (Content Manager -> Controls -> steering "deadzone").
+    # Non-zero output is rescaled to start just past it so small corrections aren't swallowed.
+    # Set this to the same value you configure in-game (0.0 if you set it to 0).
+    steer_game_deadzone: float = 0.0
+    wake_on_connect: bool = True     # tap a button once so Windows/AC notice the new pad
     steer_smoothing: float = 0.35    # EMA alpha (1 = no smoothing)
     throttle_smoothing: float = 0.50
     brake_smoothing: float = 0.50
