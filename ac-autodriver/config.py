@@ -81,11 +81,20 @@ class VisionConfig:
     hough_min_len: int = 20
     hough_max_gap: int = 12
 
-    # Obstacles (edge-dense blobs on the road surface)
+    car_center_x: float = 0.5        # where the car's centreline sits across the ROI (0..1)
+
+    # Obstacles: blobs that differ from the road colour sampled just ahead of the hood
+    obstacle_value_delta: int = 40          # brightness difference from road to count
+    obstacle_sat_delta: int = 60            # saturation above road (coloured paint, tail lights)
     obstacle_min_area_frac: float = 0.004   # of ROI area
-    obstacle_edge_density: float = 0.10     # min edge density for a zone to count as blocked
-    near_distance_m: float = 8.0            # bottom of ROI (uncalibrated)
-    far_distance_m: float = 120.0           # top of ROI
+    # Edge pixels inside a blob's box per pixel of box perimeter (sides on the ROI border
+    # excluded). Scale-free: a crisp outline alone scores ~1, cars with glass / lights /
+    # plates score 1.3+, shadows 0-0.4. Raise if you get phantom obstacles.
+    obstacle_edge_score: float = 0.7
+    # Perspective distance: d = k / (y - horizon); pinned by these two points
+    near_distance_m: float = 8.0            # at the bottom row of the ROI (uncalibrated)
+    far_distance_m: float = 120.0           # at the top row of the ROI
+    max_fps: float = 60.0                   # cap capture rate so AC keeps its CPU
     debug_window: bool = False              # cv2.imshow overlay (costs a few ms)
 
 
