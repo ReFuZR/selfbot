@@ -116,7 +116,9 @@ class ControllerConfig:
     # AC's own gamepad deadzone (Content Manager -> Controls -> steering "deadzone"). Non-zero
     # steer output is rescaled to start just past it. Set to the same value you set in-game.
     steer_game_deadzone: float = 0.0
-    wake_on_connect: bool = True     # tap a button once so Windows/AC notice the new pad
+    # Tap the A button once on connect. Only for binding screens that ignore an idle pad;
+    # off by default because A may be bound to something in-game.
+    wake_on_connect: bool = False
     steer_smoothing: float = 0.35    # EMA alpha per 60 Hz frame (1 = no smoothing)
     throttle_smoothing: float = 0.50
     brake_smoothing: float = 0.50

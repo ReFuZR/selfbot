@@ -121,16 +121,27 @@ class Snapshot:
     car_model: str
     track: str
     max_rpm: int
+    age_s: float = 0.0               # seconds since physics packetId last changed (set by reader)
 
     @classmethod
     def from_pages(cls, p: SPageFilePhysics, g: SPageFileGraphic, s: SPageFileStatic,
                    t: float | None = None) -> "Snapshot":
+        # keywords, not positions: most fields are floats, so a reorder would fail silently
         return cls(
-            time.perf_counter() if t is None else t, p.packetId, g.status, g.session,
-            p.speedKmh, p.rpms, p.gear, p.gas, p.brake, p.steerAngle, p.heading,
-            tuple(p.localVelocity), tuple(p.accG), tuple(p.wheelSlip),
-            g.normalizedCarPosition, tuple(g.carCoordinates), g.completedLaps,
-            _wstr(s.carModel), _wstr(s.track), s.maxRpm)
+            t=time.perf_counter() if t is None else t, physics_packet=p.packetId,
+            status=g.status, session=g.session, speed_kmh=p.speedKmh, rpm=p.rpms,
+            gear_raw=p.gear, gas=p.gas, brake=p.brake, steer_angle=p.steerAngle,
+            heading=p.heading, local_velocity=tuple(p.localVelocity), acc_g=tuple(p.accG),
+            wheel_slip=tuple(p.wheelSlip), normalized_pos=g.normalizedCarPosition,
+            car_xyz=tuple(g.carCoordinates), completed_laps=g.completedLaps,
+            car_model=_wstr(s.carModel), track=_wstr(s.track), max_rpm=s.maxRpm)
+
+    STALE_S = 0.1  # physics runs ~333 Hz; no new packet for 100 ms = paused / frozen / AC gone
+
+    @property
+    def is_fresh(self) -> bool:
+        """LIVE and physics actually advancing. Control code must not drive otherwise."""
+        return self.is_live and self.age_s < self.STALE_S
 
     @property
     def gear(self) -> int:           # -1 = reverse, 0 = neutral, 1..n
@@ -222,6 +233,8 @@ class ACTelemetry:
     def __init__(self) -> None:
         self._pages: list[_Page] = []
         self._static: SPageFileStatic | None = None
+        self._last_pkt: int | None = None
+        self._pkt_t = 0.0
 
     @property
     def connected(self) -> bool:
@@ -253,13 +266,21 @@ class ACTelemetry:
     def read(self) -> Snapshot:
         if not self.connected:
             raise TelemetryUnavailable("not connected")
-        phys, gfx, _ = self._pages
-        return Snapshot.from_pages(phys.read(), gfx.read(), self._static)
+        phys, gfx, stat = self._pages
+        if self._static.maxRpm == 0:   # connected mid-load: static page not filled yet
+            self._static = stat.read()
+        snap = Snapshot.from_pages(phys.read(), gfx.read(), self._static)
+        # We hold the mapping open, so it outlives acs.exe: after AC quits (or while
+        # paused) the page just freezes. Track packet progress so callers can tell.
+        if snap.physics_packet != self._last_pkt:
+            self._last_pkt, self._pkt_t = snap.physics_packet, snap.t
+        snap.age_s = snap.t - self._pkt_t
+        return snap
 
     def close(self) -> None:
         for p in self._pages:
             p.close()
-        self._pages, self._static = [], None
+        self._pages, self._static, self._last_pkt = [], None, None
 
     def __enter__(self) -> "ACTelemetry":
         return self
@@ -301,13 +322,32 @@ def selftest() -> int:
         if not ok:
             fails.append(f"round-trip: {what}")
 
+    # every Snapshot field must come from the right source field: give each a unique value
+    src = {"physics_packet": (p, "packetId"), "status": (g, "status"),
+           "session": (g, "session"), "speed_kmh": (p, "speedKmh"), "rpm": (p, "rpms"),
+           "gear_raw": (p, "gear"), "gas": (p, "gas"), "brake": (p, "brake"),
+           "steer_angle": (p, "steerAngle"), "heading": (p, "heading"),
+           "normalized_pos": (g, "normalizedCarPosition"),
+           "completed_laps": (g, "completedLaps"), "max_rpm": (s, "maxRpm")}
+    for i, (obj, attr) in enumerate(src.values(), start=11):
+        setattr(obj, attr, i)
+    for i, arr in enumerate((p.localVelocity, p.accG, p.wheelSlip, g.carCoordinates)):
+        for j in range(len(arr)):
+            arr[j] = 100 + 10 * i + j
+    n = Snapshot.from_pages(p, g, s, t=0.0)
+    fails += [f"mapping: {k}" for i, k in enumerate(src, start=11) if getattr(n, k) != i]
+    for i, k in enumerate(("local_velocity", "acc_g", "wheel_slip", "car_xyz")):
+        if getattr(n, k) != tuple(float(100 + 10 * i + j) for j in range(len(getattr(n, k)))):
+            fails.append(f"mapping: {k}")
+
     print(f"sizeof: physics={ctypes.sizeof(P)} graphics={ctypes.sizeof(G)} static={ctypes.sizeof(S)}")
     print("SELFTEST", "FAILED:\n  " + "\n  ".join(fails) if fails else "OK")
     return 1 if fails else 0
 
 
 def _hud_line(s: Snapshot, rate: float) -> str:
-    return (f"{s.status_name:<6} {s.session_name:<8} | {s.speed_kmh:6.1f} km/h | "
+    state = s.status_name if s.age_s < s.STALE_S else "FROZEN"
+    return (f"{state:<6} {s.session_name:<8} | {s.speed_kmh:6.1f} km/h | "
             f"RPM {s.rpm:5d}/{s.max_rpm:<5d} | Gear {s.gear_label:>2} | "
             f"Gas {s.gas:4.2f} Brk {s.brake:4.2f} Steer {s.steer_angle:+6.2f} | "
             f"Slip {s.max_wheel_slip:5.2f} | pkt {s.physics_packet} ({rate:3.0f}/s)")

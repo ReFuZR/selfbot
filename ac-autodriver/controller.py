@@ -270,7 +270,7 @@ def selftest() -> int:
 def bind_test() -> int:
     """Sweep each axis slowly so Content Manager / joy.cpl can see and bind it."""
     try:
-        vc = VirtualController()
+        vc = VirtualController(replace(CONFIG.controller, wake_on_connect=True))
     except ControllerError as e:
         print(f"ERROR: {e}")
         return 1
