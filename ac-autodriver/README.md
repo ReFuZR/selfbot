@@ -75,11 +75,37 @@ Pick in the menu, with F9, or with one line in `config.py` (`MODE = "simple"`).
 |---|---|
 | `cruise` | 180 km/h, long gaps, only overtakes when blocked |
 | `simple` | 250 km/h, clean overtakes for pass and speed points |
-| `madmax` | 300 km/h, tight gaps, quick lane changes, leans toward cars it passes for near-miss multipliers |
+| `madmax` | 300 km/h, late swerves, passes traffic about 0.6 m away, cuts back in tight in front of cars it passes |
 
-Score (our own model; AC can't read a server's score): passes x speed x combo,
-x2.5 for near misses, points per second above 150 km/h, -1000 per crash
-(`crash_resets_score = True` makes a crash wipe the run).
+## Score
+
+Our own model (AC can't read a server's score). **The closer you get, the more it pays:**
+
+| Event | Points (all x speed/100 km/h x combo) |
+|---|---|
+| pass a car | 100 x proximity: 1x with both cars centred (1.8 m gap), up to 5x when squeezing past. Under 1.2 m = NEAR MISS |
+| cut in front of a car you passed | 150 x (15 m / gap): tighter cut, more points |
+| late swerve out from behind a car | 100 x (30 m / distance when you pull out) |
+| speed | points per second above 150 km/h |
+| crash | -1000 (`crash_resets_score = True`: a crash wipes the run) |
+
+Each scoring event within 6 s of the last grows the combo, up to x10.
+
+## How risky it drives
+
+Per-mode settings in `config.py` (`MODES`):
+
+| Setting | Riskier = | What it does |
+|---|---|---|
+| `hug` | higher | how far it leans toward a car while passing (half-lane widths). madmax 0.8 = ~0.6 m gap. 1.0 sideswiped constantly in testing |
+| `cut_gap_m` | lower | how tight it'll move in front of a car it just passed |
+| `overtake_factor` | lower | how late it swerves out from behind a car |
+| `swerve_margin_s` | lower | how close it lets a swerve get before braking anyway |
+| `brake_commit` | higher | how much braking it counts on when judging a gap |
+| `trust_empty_lanes` | True | assume an empty-looking lane is empty. Vision sees ~120 m, and at madmax speed a car just past that is a crash: in testing this multiplied crashes ~4x for no score gain, so it's off |
+
+`steer.lat_limit` caps how hard it can steer (a lateral-g limit); it stops spins on
+abrupt swerves.
 
 ## First-drive tuning
 
@@ -88,6 +114,8 @@ Start in **cruise**. All settings are in `config.py`, with comments.
 | Symptom | Change |
 |---|---|
 | turns lazily, drifts in the lane | raise `steer_output_scale` (0.55), or the mode's `steer_gain` |
+| spins or slides on lane changes | lower `lat_limit` (0.15); can't change lane quickly enough: raise it |
+| touches cars while passing | lower the mode's `hug` (vision in the real game is noisier than in the simulator) |
 | weaves / oscillates | lower them |
 | hands control back by itself | raise `takeover_steer` / `takeover_pedal` (`WheelConfig`) |
 | phantom cars | raise `obstacle_edge_score`; missed cars: lower `obstacle_value_delta` |
