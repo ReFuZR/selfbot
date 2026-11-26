@@ -112,6 +112,7 @@ class Snapshot:
     brake: float
     steer_angle: float
     heading: float                   # rad
+    velocity: tuple[float, float, float]        # world frame, m/s (x, y up, z)
     local_velocity: tuple[float, float, float]
     acc_g: tuple[float, float, float]
     wheel_slip: tuple[float, float, float, float]
@@ -133,7 +134,7 @@ class Snapshot:
             t=time.perf_counter() if t is None else t, physics_packet=p.packetId,
             status=g.status, session=g.session, speed_kmh=p.speedKmh, rpm=p.rpms,
             gear_raw=p.gear, gas=p.gas, brake=p.brake, steer_angle=p.steerAngle,
-            heading=p.heading, local_velocity=tuple(p.localVelocity), acc_g=tuple(p.accG),
+            heading=p.heading, velocity=tuple(p.velocity), local_velocity=tuple(p.localVelocity), acc_g=tuple(p.accG),
             wheel_slip=tuple(p.wheelSlip), damage=float(sum(p.carDamage)), auto_shifter=bool(p.autoShifterOn), normalized_pos=g.normalizedCarPosition,
             car_xyz=tuple(g.carCoordinates), completed_laps=g.completedLaps,
             car_model=_wstr(s.carModel), track=_wstr(s.track), max_rpm=s.maxRpm)
@@ -333,7 +334,7 @@ def selftest() -> int:
            "completed_laps": (g, "completedLaps"), "max_rpm": (s, "maxRpm")}
     for i, (obj, attr) in enumerate(src.values(), start=11):
         setattr(obj, attr, i)
-    for i, arr in enumerate((p.localVelocity, p.accG, p.wheelSlip, g.carCoordinates)):
+    for i, arr in enumerate((p.localVelocity, p.accG, p.wheelSlip, g.carCoordinates, p.velocity)):
         for j in range(len(arr)):
             arr[j] = 100 + 10 * i + j
     p.carDamage[1], p.carDamage[4] = 0.25, 0.5
@@ -344,7 +345,7 @@ def selftest() -> int:
     if n.auto_shifter is not True:
         fails.append("mapping: auto_shifter")
     fails += [f"mapping: {k}" for i, k in enumerate(src, start=11) if getattr(n, k) != i]
-    for i, k in enumerate(("local_velocity", "acc_g", "wheel_slip", "car_xyz")):
+    for i, k in enumerate(("local_velocity", "acc_g", "wheel_slip", "car_xyz", "velocity")):
         if getattr(n, k) != tuple(float(100 + 10 * i + j) for j in range(len(getattr(n, k)))):
             fails.append(f"mapping: {k}")
 

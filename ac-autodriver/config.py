@@ -207,6 +207,7 @@ class HotkeyConfig:
     toggle: str = "f8"               # engage / pause   (pynput key names)
     kill: str = "f12"                # zero all axes and exit immediately
     mode: str = "f9"                 # cycle cruise -> simple -> madmax
+    record: str = "f7"               # start / stop recording your lane as the path
 
 
 @dataclass
@@ -217,6 +218,27 @@ class WheelConfig:
     takeover: bool = True            # engaged: touching the wheel or pedals hands control back
     takeover_steer: float = 0.04     # wheel moved this fraction of full range (~18 deg on 900)
     takeover_pedal: float = 0.15     # pedal pressed this far
+
+
+@dataclass
+class DriveConfig:
+    """Steering from AC's own data, recorded paths, and gear shifting."""
+    # steering model: learned from your driving (curvature per unit of steering axis)
+    learn_seconds: float = 3.0       # seconds of real steering it needs before it may drive
+    steer_models_file: str = "steer_models.json"   # learned per car, reused next time
+    # recorded paths (F7): your lane, from AC's world coordinates
+    paths_dir: str = "paths"
+    lane_width_m: float = 3.7
+    record_spacing_m: float = 2.0
+    curve_lookahead_s: float = 0.3   # how far ahead to read the path's curve (covers steering lag)
+    # gears: when AC's automatic gearbox is off, the bot shifts with vJoy buttons
+    # (bind Gear Up / Gear Down to vJoy buttons 1 / 2 in Content Manager)
+    upshift_button: int = 1
+    downshift_button: int = 2
+    upshift_rpm_frac: float = 0.93   # of max rpm
+    downshift_rpm_frac: float = 0.55
+    shift_press_s: float = 0.08
+    shift_interval_s: float = 0.7
 
 
 @dataclass
@@ -233,6 +255,7 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
     wheel: WheelConfig = field(default_factory=WheelConfig)
+    drive: DriveConfig = field(default_factory=DriveConfig)
 
     @property
     def active(self) -> Mode:
