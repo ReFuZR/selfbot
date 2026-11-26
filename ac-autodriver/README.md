@@ -107,6 +107,21 @@ Per-mode settings in `config.py` (`MODES`):
 `steer.lat_limit` caps how hard it can steer (a lateral-g limit); it stops spins on
 abrupt swerves.
 
+## Not driving right?
+
+Run **`run.bat` -> 0 (Diagnose)** with AC in a session and the car stopped. It:
+
+1. moves the virtual wheel's steering, gas and brake one at a time and reads back what
+   AC receives: tells you if an axis isn't bound, is inverted, or crossed;
+2. records 30 s while you drive past traffic (or play a replay): what vision sees, and
+   what the bot would decide and why.
+
+Then send `diagnostics.zip`. While driving, the HUD also shows:
+
+- `sending` vs `AC gets`: if they disagree, the binding is wrong (the HUD says so)
+- `lanes`: why it isn't changing lanes, e.g. `L: car beside`, `R: unseen lane, too fast`
+- `vision`: distance to the nearest car per lane; `--` = sees nothing there
+
 ## First-drive tuning
 
 Start in **cruise**. All settings are in `config.py`, with comments.

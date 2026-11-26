@@ -13,6 +13,7 @@ cls
 echo.
 echo   ac-autodriver
 echo   -------------------------------------------------------------
+echo   0  DIAGNOSE               (not driving right? run this, send diagnostics.zip)
 echo   1  DRIVE                  (F8 engage/pause, F9 mode, F12 kill)
 echo   2  Wheel setup            (learn your Logitech's axes - once)
 echo   3  Bind test              (bind the virtual wheel in Content Manager)
@@ -24,10 +25,11 @@ echo   8  Self-tests
 echo   9  Re-run installer
 echo   Q  Quit
 echo.
-choice /c 123456789Q /n /m "  Pick: "
+choice /c 1234567890Q /n /m "  Pick: "
 set "PICK=%errorlevel%"
 echo.
-if "%PICK%"=="10" exit /b 0
+if "%PICK%"=="11" exit /b 0
+if "%PICK%"=="10" "%PY%" diagnose.py
 if "%PICK%"=="1" goto drive
 if "%PICK%"=="2" "%PY%" controller.py --wheel-setup
 if "%PICK%"=="3" "%PY%" controller.py --bind-test
@@ -35,7 +37,7 @@ if "%PICK%"=="4" "%PY%" telemetry.py
 if "%PICK%"=="5" "%PY%" vision.py --calibrate
 if "%PICK%"=="6" "%PY%" vision.py --live
 if "%PICK%"=="7" "%PY%" sim.py
-if "%PICK%"=="8" for %%m in (telemetry controller vision planner main sim) do (
+if "%PICK%"=="8" for %%m in (telemetry controller vision planner main diagnose sim) do (
     echo --- %%m
     "%PY%" %%m.py --selftest
 )

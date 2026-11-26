@@ -51,6 +51,8 @@ class Driver:
         self._crashes = 0
         self.snap = self.perc = self.cmd = self.phys = None
         self.out = (0.0, 0.0, 0.0)
+        self._bind_err = [0.0, 0.0]
+        self.binding_warning = ""
         self.tick_hz, self._ticks, self._hz_t = 0.0, 0, None
 
     # -- hotkeys (called from the listener thread) -------------------------- #
@@ -158,12 +160,27 @@ class Driver:
             elif not self._neutral:
                 self.pad.neutralize()
                 self.out, self._neutral = (0.0, 0.0, 0.0), True
+        self._check_binding()
         self._log(now)
         self._ticks += 1
         if self._hz_t is None:
             self._hz_t = now
         elif now - self._hz_t >= 1.0:
             self.tick_hz, self._ticks, self._hz_t = self._ticks / (now - self._hz_t), 0, now
+
+    def _check_binding(self) -> None:
+        """AC reports the throttle / brake it actually receives. If that keeps disagreeing with
+        what we send, Content Manager's binding is wrong (wrong axis, inverted, or still your
+        Logitech pedal) - say so instead of silently driving badly."""
+        s = self.snap
+        if s is None or not s.is_fresh or self.pad.killed:
+            return
+        for i, (name, got) in enumerate((("throttle", s.gas), ("brake", s.brake))):
+            diff = abs(got - self.out[i + 1])
+            self._bind_err[i] += 0.03 * (diff - self._bind_err[i])      # ~0.5 s average
+        bad = [n for n, e in zip(("throttle", "brake"), self._bind_err) if e > 0.35]
+        self.binding_warning = (f"AC's {' and '.join(bad)} doesn't follow ours - check the Content "
+                                "Manager binding (vJoy axis, invert). run.bat -> 0 diagnoses it" if bad else "")
 
     def _log(self, now: float) -> None:
         if not self.log:
@@ -175,7 +192,9 @@ class Driver:
             c and c.state, c and c.note, *(f"{x:.3f}" for x in self.out),
             p and p.lanes.offset is not None and f"{p.lanes.offset:.3f}", p and f"{p.lanes.confidence:.2f}",
             *((z and f"{z[k].nearest_m:.1f}") for k in ("left", "center", "right")),
-            f"{self.planner.score.total:.0f}", self.status])
+            f"{self.planner.score.total:.0f}", self.status,
+            *((s and f"{x:.3f}") for x in ((s.gas, s.brake, s.steer_angle) if s else (0, 0, 0))),
+            self.planner.why, int(bool(self.binding_warning))])
 
     # -- HUD ------------------------------------------------------------------- #
     def hud(self) -> str:
@@ -192,7 +211,13 @@ class Driver:
             lines.append("car     waiting for Assetto Corsa...")
         st, thr, brk = self.out
         lines.append(f"plan    {(c.state if c else '-'):<7} {(c.note if c else ''):<22} "
-                     f"steer {st:+.2f}  gas {thr:.2f}  brake {brk:.2f}")
+                     f"sending: steer {st:+.2f}  gas {thr:.2f}  brake {brk:.2f}")
+        if s:
+            lines.append(f"AC gets {'':30} steer {s.steer_angle:+.2f}  gas {s.gas:.2f}  brake {s.brake:.2f}"
+                         + (f"   !! {self.binding_warning}" if self.binding_warning else ""))
+        if self.engaged:
+            why = self.planner.why or ("lane ahead clear" if c and c.state == "CRUISE" else "")
+            lines.append(f"lanes   {why}")
         if p:
             zs = "  ".join(f"{k[0].upper()} {'--' if math.isinf(v.nearest_m) else f'{v.nearest_m:3.0f}m'}"
                            for k, v in p.zones.items())
@@ -292,7 +317,8 @@ def main() -> int:
     log = csv.writer(log_file) if log_file else None
     if log:
         log.writerow(["t", "engaged", "mode", "kmh", "state", "note", "steer", "gas", "brake",
-                      "lane_off", "lane_conf", "left_m", "center_m", "right_m", "score", "status"])
+                      "lane_off", "lane_conf", "left_m", "center_m", "right_m", "score", "status",
+                      "ac_gas", "ac_brake", "ac_steer", "why_no_lane_change", "binding_warning"])
     driver = Driver(cfg, tm, vision, pad, wheel, note, log)
     hotkeys = start_hotkeys(cfg, driver)
     print("\x1b[2J", end="")
@@ -325,10 +351,18 @@ def selftest() -> int:
     check = lambda ok, name: ok or fails.append(name)  # noqa: E731
 
     class FakeTM:
-        def __init__(self): self.snap = SimpleNamespace(
-            speed_kmh=150.0, max_wheel_slip=0.0, damage=0.0, is_fresh=True, auto_shifter=True,
-            gear_label="5", rpm=6000, car_model="car", track="track")
-        def read(self): return self.snap
+        """Echoes what the driver sends, like AC with a correct binding (or inverted)."""
+        def __init__(self):
+            self.snap = SimpleNamespace(
+                speed_kmh=150.0, max_wheel_slip=0.0, damage=0.0, is_fresh=True, auto_shifter=True,
+                gear_label="5", rpm=6000, car_model="car", track="track", gas=0.0, brake=0.0,
+                steer_angle=0.0)
+            self.driver, self.inverted = None, False
+        def read(self):
+            if self.driver:
+                g, b = self.driver.out[1], self.driver.out[2]
+                self.snap.gas, self.snap.brake = (1 - g, 1 - b) if self.inverted else (g, b)
+            return self.snap
         def try_connect(self): return True
 
     class FakeVision:
@@ -348,6 +382,7 @@ def selftest() -> int:
                       controller=replace(CONFIG.controller, output="wheel", **ctl))
         nb = NullBackend()
         d = Driver(cfg, FakeTM(), FakeVision(), VirtualController(cfg.controller, nb), FakeWheel(), "fake")
+        d.tm.driver = d
         return d, nb
 
     d, nb = make()
@@ -422,6 +457,16 @@ def selftest() -> int:
     d.request_kill()
     d.wheel.v = (0.5, 0.5, 0.0); run(3)
     check(d.stop and d.pad.killed and nb.last == (0.0, 0.0, 0.0), f"kill: {nb.last}")
+
+    # Content Manager binding check: correct binding stays quiet, inverted one is flagged
+    d4, _ = make()
+    for i in range(1, 120):
+        d4.tick(i / 60)
+    check(d4.binding_warning == "", f"correct binding flagged: {d4.binding_warning}")
+    d4.tm.inverted = True
+    for i in range(120, 240):
+        d4.tick(i / 60)
+    check("throttle" in d4.binding_warning and "AC gets" in d4.hud(), f"inverted binding: {d4.binding_warning!r}")
 
     # HUD renders in every state; run() exits on stop
     check("SIMPLE" in d.hud() or "CRUISE" in d.hud() or "MADMAX" in d.hud(), "hud")

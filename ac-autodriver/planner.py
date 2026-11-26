@@ -260,6 +260,7 @@ class Planner:
         self.prev_off: float | None = None
         self.lanes_t = -math.inf
         self.cutting = False
+        self.why = ""
         self.last_t: float | None = None
         self.last_perc: Perception | None = None
         # side lanes: longer fit = steadier closing speed for lane decisions; our lane stays
@@ -300,16 +301,28 @@ class Planner:
         # ---- lane decision --------------------------------------------------
         if self.state == "CHANGE":
             note = self._run_change(now, m)
+        self.why = ""                                   # why we're not changing lanes (HUD / log)
+        if self.state != "CHANGE" and ahead < d_over and now - self.last_change < m.cooldown_s:
+            self.why = "cooldown"
         if self.state != "CHANGE" and ahead < d_over and now - self.last_change >= m.cooldown_s:
-            options = []
+            options, why = [], []
             for side, sign in SIDES:
                 tr = self.trackers[side]
                 # where that lane's car will be once we're in it, and whether we could still
                 # brake down to its speed from there
                 gap = tr.d - self.lane_closing(side, v) * m.lane_change_s
-                if (self.lane_room(side, v, m.lane_change_s) >= 0 and gap >= max(m.min_gap_m, ahead + 5)
-                        and self.side_free(side, now)):
+                room = self.lane_room(side, v, m.lane_change_s)
+                tag = side[0].upper()
+                if not self.side_free(side, now):
+                    why.append(f"{tag}: car beside")
+                elif room < 0:
+                    seen = "unseen lane, too fast" if not math.isfinite(tr.d) else f"car {tr.d:.0f}m"
+                    why.append(f"{tag}: {seen} ({room:+.0f}m)")
+                elif gap < max(m.min_gap_m, ahead + 5):
+                    why.append(f"{tag}: gap {gap:.0f}m")
+                else:
                     options.append((gap, side, sign))
+            self.why = "; ".join(why)
             if options:
                 _, side, sign = max(options)            # most open lane
                 self.state, self.change_dir, self.change_t0, self.k = "CHANGE", sign, now, 0

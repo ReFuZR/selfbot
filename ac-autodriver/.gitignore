@@ -4,3 +4,5 @@ logs/
 calibration.png
 vision_debug.png
 __pycache__/
+diagnostics/
+diagnostics.zip
