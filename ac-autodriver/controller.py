@@ -69,6 +69,12 @@ class VGamepadBackend:
         self._pad.reset()
         self._pad.update()
 
+    def buttons(self, up: bool, down: bool) -> None:
+        B = self._vg.XUSB_BUTTON
+        for on, btn in ((up, B.XUSB_GAMEPAD_RIGHT_SHOULDER), (down, B.XUSB_GAMEPAD_LEFT_SHOULDER)):
+            (self._pad.press_button if on else self._pad.release_button)(button=btn)
+        self._pad.update()
+
     def wake(self) -> None:
         """Windows hides a new virtual pad from games until it reports some input."""
         btn = self._vg.XUSB_BUTTON.XUSB_GAMEPAD_A
@@ -108,7 +114,7 @@ class VJoyBackend:
     """vJoy virtual wheel. Axes run 1..0x8000; X centre = straight ahead, Y/Z low = pedal up."""
     AXIS_MAX = 0x8000
 
-    def __init__(self, device: int = 1, dll=None) -> None:
+    def __init__(self, device: int = 1, dll=None, up_button: int = 1, down_button: int = 2) -> None:
         if dll is None:
             if sys.platform != "win32":
                 raise ControllerError("vJoy is Windows-only")
@@ -120,6 +126,8 @@ class VJoyBackend:
             for f in ("AcquireVJD", "RelinquishVJD", "GetVJDStatus"):
                 getattr(dll, f).argtypes = [ctypes.c_uint]
             dll.GetVJDAxisExist.argtypes = [ctypes.c_uint, ctypes.c_uint]
+            dll.SetBtn.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_ubyte]
+            dll.GetVJDButtonNumber.argtypes = [ctypes.c_uint]
         self.dll, self.dev = dll, device
         if not dll.vJoyEnabled():
             raise ControllerError("vJoy is installed but disabled - enable it in 'Configure vJoy'")
@@ -136,6 +144,9 @@ class VJoyBackend:
             dll.RelinquishVJD(device)
             raise ControllerError(f"vJoy device {device} has no {'/'.join(missing)} axis - "
                                   "tick X, Y and Z in 'Configure vJoy'")
+        self.up_button, self.down_button = up_button, down_button
+        # gear buttons need at least that many buttons on the device (Configure vJoy)
+        self.has_buttons = dll.GetVJDButtonNumber(device) >= max(up_button, down_button)
         self.reset()
 
     def _ax(self, frac: float) -> int:
@@ -150,6 +161,12 @@ class VJoyBackend:
     def reset(self) -> None:
         # explicit neutral: vJoy's own ResetVJD would put X at 0 = full lock left
         self.send(0.0, 0.0, 0.0)
+        self.buttons(False, False)
+
+    def buttons(self, up: bool, down: bool) -> None:
+        if self.has_buttons:
+            self.dll.SetBtn(int(up), self.dev, self.up_button)
+            self.dll.SetBtn(int(down), self.dev, self.down_button)
 
     def wake(self) -> None:
         pass
@@ -163,7 +180,8 @@ class VJoyBackend:
 
 def make_backend(cfg: ControllerConfig):
     if cfg.output == "wheel":
-        return VJoyBackend(cfg.vjoy_device)
+        return VJoyBackend(cfg.vjoy_device, up_button=CONFIG.drive.upshift_button,
+                           down_button=CONFIG.drive.downshift_button)
     if cfg.output == "xbox":
         return VGamepadBackend()
     raise ControllerError(f"unknown controller output {cfg.output!r} (use 'wheel' or 'xbox')")
@@ -174,12 +192,16 @@ class NullBackend:
 
     def __init__(self) -> None:
         self.last, self.sent = (0.0, 0.0, 0.0), 0
+        self.btn = (False, False)
 
     def send(self, steer: float, throttle: float, brake: float) -> None:
         self.last, self.sent = (steer, throttle, brake), self.sent + 1
 
     def reset(self) -> None:
-        self.last = (0.0, 0.0, 0.0)
+        self.last, self.btn = (0.0, 0.0, 0.0), (False, False)
+
+    def buttons(self, up: bool, down: bool) -> None:
+        self.btn = (up, down)
 
     def wake(self) -> None:
         pass
@@ -215,9 +237,10 @@ class VirtualController:
         self.neutralize()
 
     # -- planner-facing API -------------------------------------------------- #
-    def set_targets(self, steer: float, throttle: float, brake: float) -> None:
-        """Latest desired inputs. steer in [-1,1]; throttle, brake in [0,1]."""
-        steer = _finite(steer) * self.steer_scale * (-1 if self.cfg.invert_steer else 1)
+    def set_targets(self, steer: float, throttle: float, brake: float, scaled: bool = True) -> None:
+        """Latest desired inputs. steer in [-1,1]; throttle, brake in [0,1].
+        scaled=False: steer is already a real axis value (the learned steering model)."""
+        steer = _finite(steer) * (self.steer_scale if scaled else 1.0) * (-1 if self.cfg.invert_steer else 1)
         throttle, brake = _clamp(_finite(throttle), 0, 1), _clamp(_finite(brake), 0, 1)
         if brake > self.BRAKE_INTERLOCK:
             throttle = 0.0
@@ -254,6 +277,12 @@ class VirtualController:
                    _clamp(_finite(brake), 0, 1))
             self._tgt, self._flt, self._out, self._last_t = list(out), list(out), out, None
             self._backend.send(*out)
+
+    def buttons(self, up: bool, down: bool) -> None:
+        """Gear buttons (held while True)."""
+        with self._lock:
+            if not self._killed and self._backend is not None and hasattr(self._backend, "buttons"):
+                self._backend.buttons(up, down)
 
     def _shape_steer(self, x: float) -> float:
         c = self.cfg
@@ -374,6 +403,14 @@ class PhysicalWheel:
             return _clamp((a[c[f"{axis}_axis"]] - c[f"{axis}_rest"]) / span, 0, 1) if span else 0.0
         return _clamp(steer, -1, 1), pedal("gas"), pedal("brake")
 
+    def read_buttons(self) -> tuple[bool, bool]:
+        """(upshift, downshift) paddles, if wheel setup learned them."""
+        c, n = self.cal, self.js.get_numbuttons()
+        def b(key):
+            i = c.get(key, -1)
+            return 0 <= i < n and bool(self.js.get_button(i))
+        return b("up_button"), b("down_button")
+
 
 def wheel_setup(cfg: WheelConfig, base: Path) -> int:
     """Interactive: learn which axes your wheel and pedals use. Takes ~30 s."""
@@ -420,6 +457,20 @@ def wheel_setup(cfg: WheelConfig, base: Path) -> int:
     except ControllerError as e:
         print(f"\n{e}")
         return 1
+
+    def button(prompt: str, exclude: set) -> int:
+        print(f"\n{prompt} (or wait to skip)")
+        end, seen = time.perf_counter() + 4.0, []
+        while time.perf_counter() < end:
+            pg.event.pump()
+            seen += [i for i in range(js.get_numbuttons()) if js.get_button(i) and i not in exclude]
+            print(f"\r  {end - time.perf_counter():3.1f} s ", end="", flush=True)
+            time.sleep(0.02)
+        return max(set(seen), key=seen.count) if seen else -1   # most-pressed button, or none
+    cal["up_button"] = button("Pull your UPSHIFT paddle (right) a few times.", set())
+    cal["down_button"] = button("Pull your DOWNSHIFT paddle (left) a few times.", {cal["up_button"]})
+    print("\n  paddles: " + ("not set - your paddles won't pass through" if cal["up_button"] < 0 else
+                             f"up = button {cal['up_button']}, down = button {cal['down_button']}"))
     (base / cfg.calibration_file).write_text(json.dumps(cal, indent=2))
     print(f"\n\nSaved {cfg.calibration_file}. Check it - move the wheel and pedals (5 s):")
     w, end = PhysicalWheel(cal, js, pg.event.pump), time.perf_counter() + 5
@@ -507,6 +558,8 @@ def selftest() -> int:
         def GetVJDAxisExist(self, n, a): return a in self.axes
         def SetAxis(self, v, n, a): self.set[a] = v; return True
         def RelinquishVJD(self, n): self.released = True
+        def GetVJDButtonNumber(self, n): return 8
+        def SetBtn(self, v, n, b): self.btns = getattr(self, "btns", {}); self.btns[b] = v; return True
     fv = FakeVJoy()
     vb = VJoyBackend(1, dll=fv)
     check(fv.set == {HID_X: 16384, HID_Y: 1, HID_Z: 1}, f"vjoy neutral on open: {fv.set}")
@@ -514,7 +567,10 @@ def selftest() -> int:
     check(fv.set == {HID_X: 0x8000, HID_Y: 0x8000, HID_Z: 1}, "vjoy full right + full gas")
     vb.send(-1.0, 0.0, 0.5)
     check(fv.set[HID_X] == 1 and abs(fv.set[HID_Z] - 16384) <= 1, "vjoy full left + half brake")
+    vb.buttons(True, False)
+    check(fv.btns == {1: 1, 2: 0}, f"vjoy gear buttons {fv.btns}")
     vb.close()
+    check(fv.btns == {1: 0, 2: 0}, "vjoy close releases buttons")
     check(fv.released and fv.set[HID_X] == 16384 and fv.set[HID_Y] == 1, "vjoy close: neutral + released")
     for bad, why in ((FakeVJoy(status=VJD_BUSY), "busy"), (FakeVJoy(status=VJD_MISS), "missing"),
                      (FakeVJoy(axes=(HID_X, HID_Y)), "no Z axis")):
@@ -531,7 +587,14 @@ def selftest() -> int:
     check(abs(w.update(0.0)[0] - 0.5) < 1e-9, "wheel steer scale")
     w.direct(-0.8, 0.3, 0.0)
     check(w.output == (-0.8, 0.3, 0.0) and w._backend.last == (-0.8, 0.3, 0.0), "pass-through exact")
+    w.set_targets(0.3, 0.0, 0.0, scaled=False)
+    check(abs(w.update(1.0)[0] - 0.3) < 1e-9, "unscaled steer (learned model) passes as-is")
+    w.buttons(True, False)
+    check(w._backend.btn == (True, False), "gear button pressed")
     w.kill()
+    check(w._backend.btn == (False, False), "kill releases gear buttons")
+    w.buttons(True, False)
+    check(w._backend.btn == (False, False), "no gear buttons after kill")
     w.direct(1.0, 1.0, 0.0)
     check(w._backend.last == (0.0, 0.0, 0.0), "no pass-through after kill")
     w.close()
@@ -542,9 +605,11 @@ def selftest() -> int:
     cal = calibration_from(rest, left, right, gas, brake, "Logitech G29 Driving Force Racing Wheel")
     check((cal["steer_axis"], cal["gas_axis"], cal["brake_axis"]) == (0, 1, 2), f"axis detect {cal}")
     class FakeStick:
-        def __init__(self, axes): self.axes = axes
+        def __init__(self, axes): self.axes, self.btns = axes, [0] * 12
         def get_numaxes(self): return len(self.axes)
         def get_axis(self, i): return self.axes[i]
+        def get_numbuttons(self): return len(self.btns)
+        def get_button(self, i): return self.btns[i]
     stick = FakeStick(list(rest))
     pw = PhysicalWheel(cal, stick)
     check(pw.read() == (0.0, 0.0, 0.0), "wheel at rest")
@@ -553,6 +618,10 @@ def selftest() -> int:
     check(abs(s + 0.5) < 1e-9 and abs(g - 0.5) < 1e-9 and abs(b - 0.5) < 1e-9, f"wheel half: {(s, g, b)}")
     stick.axes = [-0.9, 1.0, 0.6, 0.0]
     check(pw.read() == (1.0, 1.0, 1.0), "wheel full right, pedals floored")
+    check(pw.read_buttons() == (False, False), "no paddles learned = none pressed")
+    pw.cal.update(up_button=4, down_button=5)
+    stick.btns[5] = 1
+    check(pw.read_buttons() == (False, True), "downshift paddle")
     try:
         calibration_from(rest, rest, rest, gas, brake, "x")
         fails.append("calibration should reject an unmoved wheel")
@@ -570,17 +639,20 @@ def bind_test() -> int:
     except ControllerError as e:
         print(f"ERROR: {e}")
         return 1
-    print(f"Virtual {CONFIG.controller.output} is live. Sweeping steer / gas / brake 6 s each - "
-          "bind them in Content Manager now. Ctrl+C to stop.")
-    labels = ("STEER", "THROTTLE", "BRAKE")
+    print(f"Virtual {CONFIG.controller.output} is live. Cycling steer / gas / brake / gear up / gear down, "
+          "6 s each - bind them in Content Manager now. Ctrl+C to stop.")
+    labels = ("STEER", "THROTTLE", "BRAKE", "GEAR UP (vJoy button 1)", "GEAR DOWN (vJoy button 2)")
     try:
         with vc:
             t0 = time.perf_counter()
             while True:
                 t = time.perf_counter() - t0
-                phase, x = int(t // 6) % 3, math.sin((t % 6) / 6 * 2 * math.pi)
+                phase, x = int(t // 6) % 5, math.sin((t % 6) / 6 * 2 * math.pi)
                 tgt = [0.0, 0.0, 0.0]
-                tgt[phase] = x if phase == 0 else abs(x)
+                if phase < 3:
+                    tgt[phase] = x if phase == 0 else abs(x)
+                pulse = (t % 1.0) < 0.3                  # buttons: pressed 0.3 s every second
+                vc.buttons(phase == 3 and pulse, phase == 4 and pulse)
                 vc.set_targets(*tgt)
                 s, th, b = vc.update()
                 print(f"\r{labels[phase]:<26} steer {s:+.2f} thr {th:.2f} brk {b:.2f}   ",

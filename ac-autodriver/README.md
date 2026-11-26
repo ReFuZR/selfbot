@@ -26,15 +26,16 @@ It installs what's missing and skips what's there:
 Make a **new controls preset** so your normal one stays untouched.
 
 1. Content Manager: Settings, Assetto Corsa, Controls. Input method: **Wheel**.
-2. Double-click `run.bat` and pick **3 (Bind test)**. It moves the virtual wheel's
-   steering, then gas, then brake, 6 seconds each, over and over.
+2. Double-click `run.bat` and pick **3 (Bind test)**. It cycles the virtual wheel through
+   steering, gas, brake, gear up, gear down, 6 seconds each, over and over.
 3. In Content Manager click **Steering**, and wait for the STEER phase so vJoy's axis gets picked.
-   Do the same for **Throttle** (THROTTLE phase) and **Brake** (BRAKE phase).
-   Ctrl+C the bind test when done.
-4. Leave **gear shifting and all buttons on your Logitech** (paddles still work).
+   Do the same for **Throttle** (THROTTLE), **Brake** (BRAKE), **Gear Up** (GEAR UP = vJoy
+   button 1) and **Gear Down** (GEAR DOWN = vJoy button 2). Ctrl+C the bind test when done.
+4. Leave the **other buttons on your Logitech**. Your paddles still work: while you drive,
+   they're passed through to the gear buttons (wheel setup learns them).
 5. Set the steering **degrees of rotation to the same as your Logitech** (usually 900), so
    driving through pass-through feels the same as normal.
-6. **Automatic gearbox: on** (AC assists). The bot can't shift and won't engage without it.
+6. Gearbox: either. With AC's automatic gearbox off, the bot shifts itself.
 7. Save the preset, e.g. `autodriver`. Load your old preset to drive without the bot.
 
 Force feedback goes to the steering device, which is now vJoy, so your Logitech will
@@ -53,15 +54,26 @@ distance.
 
 ## 4. Drive
 
-1. Load a highway with traffic in AC (practice / offline) using the `autodriver` preset.
+1. Load your traffic server / session using the `autodriver` preset.
 2. `run.bat` → **1**, pick a mode.
-3. Drive onto the highway yourself (pass-through), get into a lane, press **F8**.
+3. **Drive yourself for a bit first** (pass-through): a few bends and lane changes. The bot
+   watches how much the car actually turns for each bit of steering (from AC's own data),
+   so it never has to guess your steering ratio or wheel degrees. The HUD `steer` line goes
+   from `learning 1.2/3 s` to `learned`; it's remembered per car, so this is once per car.
+4. Get into a lane and press **F8**.
 
 | Key | |
 |---|---|
 | **F8** | engage / pause |
 | **F9** | cycle mode: cruise, simple, madmax |
+| **F7** | optional: start / stop recording your lane as a path for this track |
 | **F12** | kill: wheel centred, pedals up, program exits |
+
+**F7 path (optional).** On a road you drive a lot, press F7, drive your lane centred
+for a while, press F7 again. From then on the bot knows its exact place in that lane from
+AC's coordinates and reads the bends ahead, so lane keeping no longer depends on vision
+seeing lane lines (vision still watches traffic). Lane changes are one lane width either
+side of it. Saved per track in `paths\`.
 
 It pauses by itself when you touch the wheel or pedals, the game is paused, it
 crashes, vision loses the lanes, or the car is stuck. Every drive is logged to

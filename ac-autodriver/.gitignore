@@ -6,3 +6,5 @@ vision_debug.png
 __pycache__/
 diagnostics/
 diagnostics.zip
+steer_models.json
+paths/

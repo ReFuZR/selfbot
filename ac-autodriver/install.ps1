@@ -168,7 +168,7 @@ if ($SkipTests) { Step 'Self-tests skipped' } else {
     # PS 5.1: with 'Stop', any stderr line from a redirected native command is fatal
     $ErrorActionPreference = 'Continue'
     $failed = @()
-    foreach ($mod in 'telemetry', 'controller', 'vision', 'planner', 'main', 'diagnose', 'sim') {
+    foreach ($mod in 'telemetry', 'controller', 'vision', 'planner', 'drive', 'main', 'diagnose', 'sim') {
         $out = & $venvPy "$mod.py" --selftest 2>&1 | Select-Object -Last 1
         if ($LASTEXITCODE -eq 0) { Ok "$mod" } else { Warn "$mod : $out"; $failed += $mod }
     }

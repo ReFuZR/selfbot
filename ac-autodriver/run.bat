@@ -37,7 +37,7 @@ if "%PICK%"=="4" "%PY%" telemetry.py
 if "%PICK%"=="5" "%PY%" vision.py --calibrate
 if "%PICK%"=="6" "%PY%" vision.py --live
 if "%PICK%"=="7" "%PY%" sim.py
-if "%PICK%"=="8" for %%m in (telemetry controller vision planner main diagnose sim) do (
+if "%PICK%"=="8" for %%m in (telemetry controller vision planner drive main diagnose sim) do (
     echo --- %%m
     "%PY%" %%m.py --selftest
 )

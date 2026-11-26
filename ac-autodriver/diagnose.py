@@ -85,6 +85,28 @@ def check_bindings(tm, pad, settle: float = 0.35, sample: float = 0.15, sleep=ti
     if max(r[1] for r in brk) - min(r[1] for r in brk) > 0.3:
         lines.append("  !! the throttle moved while we only moved the brake: throttle and brake are crossed")
     pad.direct(0.0, 0.0, 1.0)
+
+    s = tm.read()
+    if getattr(s, "auto_shifter", True):
+        lines.append("gears:    AC automatic gearbox is on - fine, the bot doesn't need to shift")
+    else:
+        def press(up: bool) -> int:
+            pad.buttons(up, not up)
+            sleep(0.15)
+            tm.read()                                # (AC sees the press while it's held)
+            pad.buttons(False, False)
+            sleep(settle + 0.3)
+            return tm.read().gear_raw
+        g0 = s.gear_raw
+        g1 = press(True)
+        g2 = press(False)
+        if g0 == g1 == g2:
+            lines.append("gears:    NOT RESPONDING - bind Gear Up / Gear Down to vJoy buttons 1 / 2 in Content "
+                         "Manager (bind test cycles them), or turn on AC's automatic gearbox")
+        elif g1 < g0:
+            lines.append("gears:    SWAPPED - Gear Up is bound to vJoy button 2 and Down to 1")
+        else:
+            lines.append("gears:    OK (shifted up and back down)")
     return lines
 
 
@@ -246,14 +268,22 @@ def selftest() -> int:
 
     class FakeAC:
         """AC with a configurable Content Manager binding, reading our vJoy output."""
-        def __init__(self, nb, gas="ok", brake="ok", steer="ok"):
-            self.nb, self.gas, self.brake, self.steer = nb, gas, brake, steer
+        def __init__(self, nb, gas="ok", brake="ok", steer="ok", gears="ok"):
+            self.nb, self.gas, self.brake, self.steer, self.gears = nb, gas, brake, steer, gears
+            self.gear, self.prev_btn = 1, (False, False)
         def read(self):
+            up, dn = self.nb.btn
+            if self.gears != "none" and (up, dn) != self.prev_btn:
+                if self.gears == "swap":
+                    up, dn = dn, up
+                self.gear += (up and not self.prev_btn[0]) - (dn and not self.prev_btn[1])
+            self.prev_btn = self.nb.btn
             st, g, b = self.nb.last
             m = {"ok": lambda x: x, "inv": lambda x: 1 - x, "none": lambda x: 0.0, "swap": None}
             gas = b if self.gas == "swap" else m[self.gas](g)
             brk = g if self.brake == "swap" else m[self.brake](b)
-            return SimpleNamespace(steer_angle=0.0 if self.steer == "none" else st * 0.8, gas=gas, brake=brk)
+            return SimpleNamespace(steer_angle=0.0 if self.steer == "none" else st * 0.8, gas=gas, brake=brk,
+                                   gear_raw=self.gear, auto_shifter=False)
 
     def run(**binding) -> list[str]:
         nb = NullBackend()
@@ -261,11 +291,14 @@ def selftest() -> int:
         return check_bindings(FakeAC(nb, **binding), pad, settle=0, sample=0, sleep=lambda s: None)
 
     r = run()
-    check(r[0].startswith("steering: responds") and r[1] == "throttle: OK" and r[2] == "brake:    OK", f"all ok: {r}")
+    check(r[0].startswith("steering: responds") and r[1] == "throttle: OK" and r[2] == "brake:    OK"
+          and "OK" in r[-1], f"all ok: {r}")
+    check("NOT RESPONDING" in run(gears="none")[-1], "gears unbound")
+    check("SWAPPED" in run(gears="swap")[-1], "gears swapped")
     r = run(gas="inv")
     check("INVERTED" in r[1] and r[2] == "brake:    OK", f"inverted gas: {r}")
     r = run(brake="none", steer="none")
-    check("NOT RESPONDING" in r[0] and "NOT RESPONDING" in r[-1], f"unbound: {r}")
+    check("NOT RESPONDING" in r[0] and "NOT RESPONDING" in r[2], f"unbound: {r}")
     r = run(gas="swap", brake="swap")
     check(any("crossed" in x for x in r), f"crossed: {r}")
 
