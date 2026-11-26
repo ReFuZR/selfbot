@@ -1,64 +1,109 @@
 """
-config.py - every tunable in one place. Values are untuned starting points:
-tune them in a practice session on an empty road before trusting them at speed.
+config.py - every tunable in one place.
+
+Most people only change MODE. Each mode is a preset of how hard the car drives;
+tweak a preset below or add your own. Everything else is plumbing you tune once.
+Values are starting points: try them in sim.py, then on an empty road in AC.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+MODE = "simple"   # "cruise" | "simple" | "madmax"   (override with  python main.py --mode madmax)
+
+
+@dataclass
+class Mode:
+    description: str
+    target_kmh: float            # cruise speed with a clear lane
+    follow_base_m: float         # braking distance = follow_base_m + follow_per_kmh_m * speed
+    follow_per_kmh_m: float
+    overtake_factor: float       # start a lane change at this x braking distance
+    min_gap_m: float             # target lane must be clear at least this far ahead
+    blind_spot_s: float          # extra seconds of gap a passed car must have behind us before we cut in
+    lane_change_s: float         # time to move one lane over
+    cooldown_s: float            # minimum time between lane changes
+    hug: float                   # lean toward cars being passed (half-lane widths) - near-miss farming
+    steer_gain: float            # overall steering aggressiveness
+    slip_threshold: float        # wheelSlip above this trims throttle / steering (calibrate in AC)
+
+
+MODES: dict[str, Mode] = {
+    "cruise": Mode("Relaxed, safe gaps, only changes lane when blocked. Scores, but doesn't chase.",
+                   target_kmh=180, follow_base_m=30, follow_per_kmh_m=0.70, overtake_factor=1.6,
+                   min_gap_m=45, blind_spot_s=2.5, lane_change_s=3.0, cooldown_s=6.0,
+                   hug=0.0, steer_gain=0.9, slip_threshold=2.5),
+    "simple": Mode("Simple scoring: high speed and clean overtakes for pass + speed points.",
+                   target_kmh=250, follow_base_m=22, follow_per_kmh_m=0.50, overtake_factor=1.4,
+                   min_gap_m=30, blind_spot_s=1.6, lane_change_s=2.2, cooldown_s=2.5,
+                   hug=0.0, steer_gain=1.0, slip_threshold=3.0),
+    "madmax": Mode("Max out the score model: flat out, late swerves, tight gaps, hugs traffic "
+                   "for near-miss multipliers, keeps the combo alive.",
+                   target_kmh=300, follow_base_m=20, follow_per_kmh_m=0.36, overtake_factor=1.2,
+                   min_gap_m=18, blind_spot_s=0.9, lane_change_s=2.0, cooldown_s=1.5,
+                   hug=0.4, steer_gain=1.2, slip_threshold=3.4),
+}
+
+
+@dataclass
+class ScoreConfig:
+    """Our own score model (AC's shared memory can't read a server/CSP script score)."""
+    pass_points: float = 100.0       # per car passed, x (speed / 100 km/h) x combo
+    near_miss_lean: float = 0.25     # leaning this far toward the passed car = near miss
+    near_miss_mult: float = 2.5
+    pass_trigger_m: float = 15.0     # a side car must get this close to count as being passed
+    speed_floor_kmh: float = 150.0   # speed points accrue above this
+    speed_points_per_s: float = 10.0 # per second, per 100 km/h above the floor
+    combo_window_s: float = 6.0      # pass again within this to grow the combo
+    combo_max: int = 10
+    crash_penalty: float = 1000.0
+    crash_resets_score: bool = False # True = No-Hesi style: a crash wipes the run
+
 
 @dataclass
 class LoopConfig:
     hz: float = 60.0                 # control loop rate
     hud_hz: float = 10.0             # terminal HUD refresh rate
-    telemetry_wait_s: float = 2.0    # retry interval while waiting for AC to start
 
 
 @dataclass
 class SpeedConfig:
-    """Cruise control: PID on speed error (km/h). Output in [-1, 1]: >0 throttle, <0 brake."""
-    target_kmh: float = 240.0        # cruise speed when the lane is clear (220-280 typical)
-    min_kmh: float = 60.0            # never plan below this when merely following
+    """Cruise PID on speed error (km/h). Output in [-1, 1]: >0 throttle, <0 brake."""
     kp: float = 0.045
     ki: float = 0.006
     kd: float = 0.010
     integral_limit: float = 0.35     # anti-windup clamp on the I term (output units)
-    max_throttle: float = 1.0
-    max_brake: float = 1.0
-    brake_deadband_kmh: float = 6.0  # no brake until this far OVER target (coast instead of dabbing)
-    throttle_slew_per_s: float = 2.5 # max throttle change per second (smoothness)
-    brake_slew_per_s: float = 4.0
+    brake_deadband_kmh: float = 6.0  # no PID braking until this far OVER target (coast instead)
+    throttle_slew_per_s: float = 2.5 # max throttle change per second
+    brake_slew_per_s: float = 5.0
+    brake_decel_mps2: float = 10.0  # what full brake achieves at speed (GT cars ~12-15). Used to
+                                    # brake on time-to-impact and size safe overtaking gaps.
 
 
 @dataclass
 class SteerConfig:
-    # Lane-keeping PID; input = lateral offset error in [-1, 1] (-1 = far left of lane centre)
-    kp: float = 0.55
-    ki: float = 0.00
-    kd: float = 0.12
-    max_steer: float = 1.0           # absolute clamp on the stick axis
-
-    # Speed damping: steer *= 1 / (1 + (speed / ref) ** exponent)
+    """Lateral PD on lane offset (half-lane widths; vision reports it)."""
+    kp: float = 0.12                 # per half-lane of position error
+    kd: float = 0.09                 # per half-lane/s of lateral speed
+    k_heading: float = 0.0           # feed-forward on vision lane heading (curvy roads: try 0.2)
+    max_steer: float = 1.0
+    # speed damping: steer *= 1 / (1 + (speed / ref) ** exponent); exponent 2 keeps the
+    # car's lateral response roughly constant above ref (lateral accel grows with v^2)
     damp_ref_kmh: float = 90.0
-    damp_exponent: float = 1.6       # higher = sharper fall-off past ref
-    min_steer_scale: float = 0.06    # floor so the car can still change lane at 280
-
-    # Lane-change shaping
-    lane_change_steer: float = 0.22  # peak steer command (pre-damping)
-    lane_change_duration_s: float = 2.2
-    slew_per_s: float = 3.0          # max steer change per second at low speed
-    slew_high_speed_per_s: float = 0.9   # ...and at/above 2x damp_ref_kmh
+    damp_exponent: float = 2.0
+    min_steer_scale: float = 0.03
+    slew_per_s: float = 3.0          # max steer change per second at low speed...
+    slew_high_speed_per_s: float = 1.0   # ...and at/above 2x damp_ref_kmh
 
 
 @dataclass
 class StabilityConfig:
-    """Guard driven by wheelSlip from physics."""
-    slip_threshold: float = 4.0      # spike above this -> trim
+    """Throttle/steer trim when wheelSlip exceeds the mode's slip_threshold."""
     slip_trim_gain: float = 0.12     # throttle removed per unit of slip over threshold
-    max_trim: float = 0.60           # never remove more than this fraction of throttle
-    steer_trim_gain: float = 0.08    # extra steer reduction per unit of slip over threshold
-    recover_per_s: float = 1.5       # how fast the trim relaxes once slip is normal
+    max_trim: float = 0.60
+    steer_trim_gain: float = 0.08    # steer reduction per unit of slip over threshold
+    recover_per_s: float = 1.5
 
 
 @dataclass
@@ -99,17 +144,6 @@ class VisionConfig:
 
 
 @dataclass
-class PlannerConfig:
-    # Dynamic braking distance (m) = base + speed_kmh * per_kmh
-    brake_dist_base_m: float = 25.0
-    brake_dist_per_kmh_m: float = 0.55   # ~140 m at 210 km/h
-    overtake_dist_factor: float = 1.4    # evaluate a lane change at factor * braking distance
-    min_gap_m: float = 30.0              # adjacent lane must be clear at least this far
-    lane_change_cooldown_s: float = 4.0
-    progressive_brake_gain: float = 0.012   # brake per metre inside the braking distance
-
-
-@dataclass
 class ExternalObstacleConfig:
     """Optional feed from a Custom Shaders Patch Lua script over UDP (later)."""
     enabled: bool = False
@@ -120,7 +154,9 @@ class ExternalObstacleConfig:
 
 @dataclass
 class ControllerConfig:
-    steer_deadzone: float = 0.015    # |steer| below this is snapped to 0 (kills stick jitter)
+    # |steer| below this is snapped to 0. Keep it tiny: at 250 km/h the speed-damped
+    # corrections are only 0.005-0.02, and a bigger deadzone deletes them.
+    steer_deadzone: float = 0.002
     trigger_deadzone: float = 0.02   # same for throttle / brake
     # AC's own gamepad deadzone (Content Manager -> Controls -> steering "deadzone"). Non-zero
     # steer output is rescaled to start just past it. Set to the same value you set in-game.
@@ -142,15 +178,23 @@ class HotkeyConfig:
 
 @dataclass
 class Config:
+    mode: str = MODE
+    modes: dict[str, Mode] = field(default_factory=lambda: dict(MODES))
+    score: ScoreConfig = field(default_factory=ScoreConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
     steer: SteerConfig = field(default_factory=SteerConfig)
     stability: StabilityConfig = field(default_factory=StabilityConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
-    planner: PlannerConfig = field(default_factory=PlannerConfig)
     external: ExternalObstacleConfig = field(default_factory=ExternalObstacleConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
+
+    @property
+    def active(self) -> Mode:
+        if self.mode not in self.modes:
+            raise ValueError(f"unknown mode {self.mode!r}; choose from {', '.join(self.modes)}")
+        return self.modes[self.mode]
 
 
 CONFIG = Config()
