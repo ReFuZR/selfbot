@@ -203,7 +203,8 @@ class Driver:
             err = getattr(self.vision, "error", None)
             lines.append(f"vision  no frames{f' ({err})' if err else ''}")
         lines.append(f"score   {sc.total:9,.0f}  combo x{sc.combo} ({sc.combo_left(now):3.1f}s)  "
-                     f"passes {sc.passes}  near {sc.near_misses}  crashes {sc.crashes}  best {sc.best:,.0f}")
+                     f"passes {sc.passes}  near {sc.near_misses}  cuts {sc.cuts}  swerves {sc.swerves}  "
+                     f"crashes {sc.crashes}  best {sc.best:,.0f}")
         mode = "pass-through" if self.phys and self.cfg.wheel.passthrough and not self.engaged else ""
         ph = (f"steer {self.phys[0]:+.2f} gas {self.phys[1]:.2f} brake {self.phys[2]:.2f}"
               if self.phys else "")

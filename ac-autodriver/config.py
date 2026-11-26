@@ -19,43 +19,59 @@ class Mode:
     target_kmh: float            # cruise speed with a clear lane
     follow_base_m: float         # braking distance = follow_base_m + follow_per_kmh_m * speed
     follow_per_kmh_m: float
-    overtake_factor: float       # start a lane change at this x braking distance
+    overtake_factor: float       # start a lane change at this x braking distance (lower = later swerve)
     min_gap_m: float             # target lane must be clear at least this far ahead
-    blind_spot_s: float          # extra seconds of gap a passed car must have behind us before we cut in
+    cut_gap_m: float             # bumper gap we'll accept moving in front of a car we just passed
+    cut_back: bool               # weave back in front of cars we pass, for cut points
+    brake_commit: float          # share of full braking we count on when judging a gap (higher = riskier)
+    swerve_margin_s: float       # mid-swerve, only brake if we'd reach the car ahead within
+                                 # (time to clear it sideways + this). Lower = riskier swerves
     lane_change_s: float         # time to move one lane over
     cooldown_s: float            # minimum time between lane changes
-    hug: float                   # lean toward cars being passed (half-lane widths) - near-miss farming
+    hug: float                   # lean toward cars being passed (half-lane widths): closer = more points
     steer_gain: float            # overall steering aggressiveness
     slip_threshold: float        # wheelSlip above this trims throttle / steering (calibrate in AC)
+    trust_empty_lanes: bool = False  # True: a lane that looks empty IS empty (vision sees ~120 m).
+                                     # Allows cuts at full speed; a car just out of view = crash.
 
 
 MODES: dict[str, Mode] = {
     "cruise": Mode("Relaxed, safe gaps, only changes lane when blocked. Scores, but doesn't chase.",
                    target_kmh=180, follow_base_m=30, follow_per_kmh_m=0.70, overtake_factor=1.6,
-                   min_gap_m=45, blind_spot_s=2.5, lane_change_s=3.0, cooldown_s=6.0,
-                   hug=0.0, steer_gain=0.9, slip_threshold=2.5),
+                   min_gap_m=45, cut_gap_m=25, cut_back=False, brake_commit=0.5, swerve_margin_s=1.0,
+                   lane_change_s=3.0, cooldown_s=6.0, hug=0.0, steer_gain=0.9, slip_threshold=2.5),
     "simple": Mode("Simple scoring: high speed and clean overtakes for pass + speed points.",
                    target_kmh=250, follow_base_m=22, follow_per_kmh_m=0.50, overtake_factor=1.4,
-                   min_gap_m=30, blind_spot_s=1.6, lane_change_s=2.2, cooldown_s=2.5,
-                   hug=0.0, steer_gain=1.0, slip_threshold=3.0),
-    "madmax": Mode("Max out the score model: flat out, late swerves, tight gaps, hugs traffic "
-                   "for near-miss multipliers, keeps the combo alive.",
-                   target_kmh=300, follow_base_m=20, follow_per_kmh_m=0.36, overtake_factor=1.2,
-                   min_gap_m=18, blind_spot_s=0.9, lane_change_s=2.0, cooldown_s=1.5,
-                   hug=0.4, steer_gain=1.2, slip_threshold=3.4),
+                   min_gap_m=30, cut_gap_m=25, cut_back=False, brake_commit=0.6, swerve_margin_s=0.6,
+                   lane_change_s=2.2, cooldown_s=2.5, hug=0.0, steer_gain=1.0, slip_threshold=3.0),
+    "madmax": Mode("Max out the score: flat out, late swerves, squeezes past traffic about 0.6 m "
+                   "away for proximity points, cuts back in tight in front of cars it passes.",
+                   target_kmh=300, follow_base_m=20, follow_per_kmh_m=0.36, overtake_factor=0.9,
+                   min_gap_m=18, cut_gap_m=4, cut_back=True, brake_commit=0.9, swerve_margin_s=0.5,
+                   lane_change_s=2.0, cooldown_s=2.0, hug=0.8, steer_gain=1.2, slip_threshold=3.4),
 }
 
 
 @dataclass
 class ScoreConfig:
-    """Our own score model (AC's shared memory can't read a server/CSP script score)."""
-    pass_points: float = 100.0       # per car passed, x (speed / 100 km/h) x combo
-    near_miss_lean: float = 0.25     # leaning this far toward the passed car = near miss
-    near_miss_mult: float = 2.5
+    """Our own score model (AC's shared memory can't read a server/CSP script score).
+    The closer you get, the more it pays."""
+    pass_points: float = 100.0       # per car passed, x (speed / 100 km/h) x combo x proximity
+    # proximity: x (ref_gap / side gap), capped. Side gap estimated from lane width, car width
+    # and how far we lean toward the car: centred in both lanes = ref_gap = x1
+    proximity_ref_gap_m: float = 1.8
+    proximity_max_mult: float = 5.0
+    near_miss_gap_m: float = 1.2     # passes closer than this are called near misses
+    lane_width_m: float = 3.7
+    car_width_m: float = 1.9
+    cut_points: float = 150.0        # moving in front of a car you passed: x (cut_ref / gap) x combo
+    cut_ref_m: float = 15.0          # only cuts tighter than this score
+    swerve_points: float = 100.0     # pulling out from behind a car: x (swerve_ref / distance) x combo
+    swerve_ref_m: float = 30.0       # only swerves later than this score
     pass_trigger_m: float = 15.0     # a side car must get this close to count as being passed
     speed_floor_kmh: float = 150.0   # speed points accrue above this
     speed_points_per_s: float = 10.0 # per second, per 100 km/h above the floor
-    combo_window_s: float = 6.0      # pass again within this to grow the combo
+    combo_window_s: float = 6.0      # score again within this to grow the combo
     combo_max: int = 10
     crash_penalty: float = 1000.0
     crash_resets_score: bool = False # True = No-Hesi style: a crash wipes the run
@@ -88,6 +104,10 @@ class SteerConfig:
     kd: float = 0.09                 # per half-lane/s of lateral speed
     k_heading: float = 0.0           # feed-forward on vision lane heading (curvy roads: try 0.2)
     max_steer: float = 1.0
+    # cap on steering authority (after steer_gain, before speed damping) = a lateral-g limit,
+    # since the damping keeps lateral response ~constant at speed. 0.15 ~ 1.1 g in sim.py's car.
+    # Car spins or slides on lane changes: lower it. Can't change lane fast enough: raise it.
+    lat_limit: float = 0.15
     # speed damping: steer *= 1 / (1 + (speed / ref) ** exponent); exponent 2 keeps the
     # car's lateral response roughly constant above ref (lateral accel grows with v^2)
     damp_ref_kmh: float = 90.0

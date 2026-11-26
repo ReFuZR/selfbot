@@ -65,6 +65,7 @@ class Sim:
             x += self.rng.exponential(45 / density) + 8
         self.prev_perc: Perception | None = None
         self.crash_log: list = []
+        self.pass_gaps: list = []
         self.last_cmd = None
 
     def _new_car(self, x: float) -> Car:
@@ -135,6 +136,8 @@ class Sim:
                 continue
             if before and c.x <= self.x:
                 self.true_passes += 1
+                if abs(c.lane - ego_lane) == 1:
+                    self.pass_gaps.append(abs(c.y - self.y) - CAR_W)   # true side gap
             if c.x < self.x - 150:                           # recycle far ahead
                 self.traffic.remove(c)
                 self.traffic.append(self._new_car(self.x + self.rng.uniform(600, 1000)))
@@ -152,6 +155,8 @@ class Sim:
             self.step(1 / hz)
         s = self.planner.score
         return dict(score=s.total, best=s.best, passes=s.passes, near=s.near_misses,
+                    cuts=s.cuts, swerves=s.swerves,
+                    gap=float(np.median(self.pass_gaps)) if self.pass_gaps else 0.0,
                     crashes=self.crashes, true_passes=self.true_passes,
                     avg_kmh=self.dist / self.t * 3.6, lat_g=self.max_lat_g)
 
@@ -209,11 +214,12 @@ def main() -> int:
         return selftest()
     modes = [a.mode] if a.mode else list(CONFIG.modes)
     print(f"{a.seeds} seed(s) x {a.seconds:.0f} s, density {a.density}  (averages per run)")
-    print(f"{'mode':<8} {'score':>8} {'passes':>7} {'near':>5} {'crash':>6} {'avg km/h':>9} {'max lat g':>9}")
+    print(f"{'mode':<8} {'score':>8} {'passes':>7} {'near':>5} {'cuts':>5} {'swerve':>6} {'side gap':>8} "
+          f"{'crash':>6} {'avg km/h':>9} {'max lat g':>9}")
     for mode in modes:
         r = run_mode(mode, a.seconds, list(range(a.seeds)), a.density, a.verbose)
-        print(f"{mode:<8} {r['score']:8.0f} {r['passes']:7.1f} {r['near']:5.1f} {r['crashes']:6.2f} "
-              f"{r['avg_kmh']:9.1f} {r['lat_g']:9.2f}")
+        print(f"{mode:<8} {r['score']:8.0f} {r['passes']:7.1f} {r['near']:5.1f} {r['cuts']:5.1f} "
+              f"{r['swerves']:6.1f} {r['gap']:7.2f}m {r['crashes']:6.2f} {r['avg_kmh']:9.1f} {r['lat_g']:9.2f}")
     return 0
 
 
