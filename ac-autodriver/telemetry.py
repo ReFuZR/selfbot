@@ -116,6 +116,7 @@ class Snapshot:
     acc_g: tuple[float, float, float]
     wheel_slip: tuple[float, float, float, float]
     damage: float                    # sum of carDamage[5]; jumps on contact (if damage is on)
+    auto_shifter: bool               # AC automatic gearbox assist on (the bot can't shift)
     normalized_pos: float            # 0..1 around the lap
     car_xyz: tuple[float, float, float]
     completed_laps: int
@@ -133,7 +134,7 @@ class Snapshot:
             status=g.status, session=g.session, speed_kmh=p.speedKmh, rpm=p.rpms,
             gear_raw=p.gear, gas=p.gas, brake=p.brake, steer_angle=p.steerAngle,
             heading=p.heading, local_velocity=tuple(p.localVelocity), acc_g=tuple(p.accG),
-            wheel_slip=tuple(p.wheelSlip), damage=float(sum(p.carDamage)), normalized_pos=g.normalizedCarPosition,
+            wheel_slip=tuple(p.wheelSlip), damage=float(sum(p.carDamage)), auto_shifter=bool(p.autoShifterOn), normalized_pos=g.normalizedCarPosition,
             car_xyz=tuple(g.carCoordinates), completed_laps=g.completedLaps,
             car_model=_wstr(s.carModel), track=_wstr(s.track), max_rpm=s.maxRpm)
 
@@ -336,9 +337,12 @@ def selftest() -> int:
         for j in range(len(arr)):
             arr[j] = 100 + 10 * i + j
     p.carDamage[1], p.carDamage[4] = 0.25, 0.5
+    p.autoShifterOn = 1
     n = Snapshot.from_pages(p, g, s, t=0.0)
     if n.damage != 0.75:
         fails.append("mapping: damage")
+    if n.auto_shifter is not True:
+        fails.append("mapping: auto_shifter")
     fails += [f"mapping: {k}" for i, k in enumerate(src, start=11) if getattr(n, k) != i]
     for i, k in enumerate(("local_velocity", "acc_g", "wheel_slip", "car_xyz")):
         if getattr(n, k) != tuple(float(100 + 10 * i + j) for j in range(len(getattr(n, k)))):

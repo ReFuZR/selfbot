@@ -2,11 +2,15 @@
 # Run it through install.bat (double-click). Safe to re-run: every step checks first.
 #
 #   1. Python 3.11+        (installs Python 3.12 with winget, or from python.org)
-#   2. ViGEmBus driver     (virtual Xbox 360 pad; winget, or the official release)
-#   3. .venv + packages    (numpy, opencv-python, mss, vgamepad, pynput)
+#   2. vJoy driver         (the virtual wheel the bot drives; your Logitech stays as it is)
+#   3. .venv + packages    (numpy, opencv-python, mss, pynput, pygame)
 #   4. self-tests          (every module checks itself; no AC needed)
+#   5. wheel setup         (learn your Logitech's axes, ~30 s)
+#
+#   install.bat -Xbox      also installs the virtual Xbox pad (ViGEmBus + vgamepad)
+#   install.bat -SkipTests
 
-param([switch]$SkipTests)
+param([switch]$SkipTests, [switch]$Xbox)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'     # makes Invoke-WebRequest much faster on PS 5.1
@@ -15,7 +19,11 @@ Set-Location -LiteralPath $PSScriptRoot
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $PythonVersion = '3.12.10'
+$VJoyUrl = 'https://github.com/jshafer817/vJoy/releases/download/v2.1.9.1/vJoySetup.exe'
+$VJoyPage = 'https://github.com/jshafer817/vJoy/releases'
 $ViGEmUrl = 'https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe'
+$UninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                   'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 
 function Step($msg) { Write-Host ''; Write-Host "==> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "    OK  $msg" -ForegroundColor Green }
@@ -28,6 +36,11 @@ function Refresh-Path {
 }
 
 function Has-Winget { [bool](Get-Command winget -ErrorAction SilentlyContinue) }
+
+function Installed($pattern) {
+    [bool](Get-ItemProperty $UninstallKeys -ErrorAction SilentlyContinue |
+           Where-Object { $_.DisplayName -like $pattern })
+}
 
 # Returns the command (as an array: exe + args) of a usable Python 3.11+, or $null.
 function Find-Python {
@@ -51,13 +64,13 @@ function Find-Python {
     return $null
 }
 
+function Test-VJoy {
+    (Test-Path (Join-Path $env:ProgramFiles 'vJoy\x64\vJoyInterface.dll')) -or (Installed 'vJoy*')
+}
+
 function Test-ViGEm {
     if (Get-Service -Name 'ViGEmBus' -ErrorAction SilentlyContinue) { return $true }
-    $keys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
-    $hit = Get-ItemProperty $keys -ErrorAction SilentlyContinue |
-           Where-Object { $_.DisplayName -like '*Virtual Gamepad Emulation Bus*' }
-    return [bool]$hit
+    Installed '*Virtual Gamepad Emulation Bus*'
 }
 
 Write-Host 'ac-autodriver installer' -ForegroundColor White
@@ -87,29 +100,42 @@ if ($py) {
 }
 
 # --------------------------------------------------------------------------- 2
-Step 'ViGEmBus virtual gamepad driver'
-if (Test-ViGEm) {
+Step 'vJoy virtual wheel driver'
+if (Test-VJoy) {
     Ok 'already installed'
 } else {
-    Warn 'not installed - a Windows admin prompt will appear, click Yes'
-    $done = $false
-    if (Has-Winget) {
-        try {
-            winget install -e --id ViGEm.ViGEmBus --silent --accept-package-agreements --accept-source-agreements
-            $done = Test-ViGEm
-        } catch { }
+    Warn 'not installed - Windows will ask for admin rights and to trust the driver: click Yes / Install'
+    try {
+        $setup = Join-Path $env:TEMP 'vJoySetup.exe'
+        Invoke-WebRequest -UseBasicParsing $VJoyUrl -OutFile $setup
+        Start-Process $setup -Wait -Verb RunAs -ArgumentList '/SILENT', '/NORESTART'
+    } catch { Warn "automatic install failed: $($_.Exception.Message)" }
+    if (Test-VJoy) {
+        Ok 'installed'
+    } else {
+        Warn "Please install vJoy by hand: the page is opening now. Run vJoySetup.exe, then re-run install.bat."
+        Start-Process $VJoyPage
     }
-    if (-not $done) {
+}
+
+if ($Xbox) {
+    Step 'ViGEmBus virtual Xbox pad driver (-Xbox)'
+    if (Test-ViGEm) {
+        Ok 'already installed'
+    } else {
+        Warn 'not installed - a Windows admin prompt will appear, click Yes'
         try {
-            $setup = Join-Path $env:TEMP 'ViGEmBus_setup.exe'
-            Invoke-WebRequest -UseBasicParsing $ViGEmUrl -OutFile $setup
-            Write-Host '    running the ViGEmBus installer - follow its window'
-            Start-Process $setup -Wait -Verb RunAs
-            $done = Test-ViGEm
-        } catch { Warn "download/install failed: $($_.Exception.Message)" }
+            if (Has-Winget) {
+                winget install -e --id ViGEm.ViGEmBus --silent --accept-package-agreements --accept-source-agreements
+            }
+            if (-not (Test-ViGEm)) {
+                $setup = Join-Path $env:TEMP 'ViGEmBus_setup.exe'
+                Invoke-WebRequest -UseBasicParsing $ViGEmUrl -OutFile $setup
+                Start-Process $setup -Wait -Verb RunAs
+            }
+        } catch { Warn "install failed: $($_.Exception.Message)" }
+        if (Test-ViGEm) { Ok 'installed' } else { Warn 'still missing: https://github.com/nefarius/ViGEmBus/releases' }
     }
-    if ($done) { Ok 'installed' }
-    else { Warn "still missing - installing the packages next will offer vgamepad's own driver installer; accept it" }
 }
 
 # --------------------------------------------------------------------------- 3
@@ -127,8 +153,11 @@ if (-not (Test-Path $venvPy)) {
 & $venvPy -m pip install --upgrade pip --quiet --disable-pip-version-check
 & $venvPy -m pip install -r requirements.txt --disable-pip-version-check
 if ($LASTEXITCODE -ne 0) { Die 'pip install failed - see the messages above' }
+if ($Xbox) {
+    & $venvPy -m pip install 'vgamepad>=0.1.0' --disable-pip-version-check
+    if ($LASTEXITCODE -ne 0) { Warn 'vgamepad install failed' }
+}
 Ok 'packages installed'
-if (-not (Test-ViGEm)) { Warn 'ViGEmBus still not detected: get it from https://github.com/nefarius/ViGEmBus/releases' }
 
 # --------------------------------------------------------------------------- 4
 if ($SkipTests) { Step 'Self-tests skipped' } else {
@@ -136,14 +165,30 @@ if ($SkipTests) { Step 'Self-tests skipped' } else {
     # PS 5.1: with 'Stop', any stderr line from a redirected native command is fatal
     $ErrorActionPreference = 'Continue'
     $failed = @()
-    foreach ($mod in 'telemetry', 'controller', 'vision', 'planner', 'sim') {
+    foreach ($mod in 'telemetry', 'controller', 'vision', 'planner', 'main', 'sim') {
         $out = & $venvPy "$mod.py" --selftest 2>&1 | Select-Object -Last 1
         if ($LASTEXITCODE -eq 0) { Ok "$mod" } else { Warn "$mod : $out"; $failed += $mod }
     }
     if ($failed.Count) { Warn ("failed: " + ($failed -join ', ') + ' - send me the output above') }
+    $ErrorActionPreference = 'Stop'
+}
+
+# --------------------------------------------------------------------------- 5
+Step 'Your wheel'
+if (Test-Path (Join-Path $PSScriptRoot 'wheel_calibration.json')) {
+    Ok 'wheel_calibration.json exists (run.bat -> 2 to redo it)'
+} else {
+    $ans = Read-Host '    Set up your Logitech wheel now? Plug it in first. [Y/n]'
+    if ($ans -notmatch '^[nN]') {
+        $ErrorActionPreference = 'Continue'
+        & $venvPy controller.py --wheel-setup
+        $ErrorActionPreference = 'Stop'
+    } else {
+        Warn 'skipped - do it later with run.bat -> 2'
+    }
 }
 
 Step 'Done'
-Write-Host '    Next: double-click run.bat. Start with option 1 (telemetry) while sitting in an'
-Write-Host '    AC practice session, then option 2 to bind the virtual pad in Content Manager.'
+Write-Host '    Next (once): bind the virtual wheel in Content Manager - see README.md,'
+Write-Host '    "Content Manager setup". Then double-click run.bat and pick 1 to drive.'
 exit 0

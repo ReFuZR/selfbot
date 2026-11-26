@@ -1,0 +1,6 @@
+wheel_calibration.json
+logs/
+.venv/
+calibration.png
+vision_debug.png
+__pycache__/

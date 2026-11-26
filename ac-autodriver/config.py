@@ -154,6 +154,15 @@ class ExternalObstacleConfig:
 
 @dataclass
 class ControllerConfig:
+    # "wheel": vJoy virtual wheel. In Content Manager bind steering / gas / brake to vJoy and
+    #          keep your Logitech for buttons; while paused your Logitech drives through it.
+    # "xbox":  virtual Xbox 360 pad (vgamepad) for a gamepad controls preset.
+    output: str = "wheel"
+    vjoy_device: int = 1
+    # Planner steer -> virtual wheel axis. The planner was tuned for ~0.30 rad of front-wheel
+    # angle at full command; a 900-degree wheel range gives ~0.55 rad at full axis on most
+    # cars, hence ~0.55. Car turns too lazily: raise it. Weaves: lower it.
+    steer_output_scale: float = 0.55
     # |steer| below this is snapped to 0. Keep it tiny: at 250 km/h the speed-damped
     # corrections are only 0.005-0.02, and a bigger deadzone deletes them.
     steer_deadzone: float = 0.002
@@ -174,6 +183,17 @@ class ControllerConfig:
 class HotkeyConfig:
     toggle: str = "f8"               # engage / pause   (pynput key names)
     kill: str = "f12"                # zero all axes and exit immediately
+    mode: str = "f9"                 # cycle cruise -> simple -> madmax
+
+
+@dataclass
+class WheelConfig:
+    """Your physical Logitech wheel (read with pygame). Set up once: run.bat -> wheel setup."""
+    calibration_file: str = "wheel_calibration.json"
+    passthrough: bool = True         # paused: your wheel/pedals drive the car through vJoy, 1:1
+    takeover: bool = True            # engaged: touching the wheel or pedals hands control back
+    takeover_steer: float = 0.04     # wheel moved this fraction of full range (~18 deg on 900)
+    takeover_pedal: float = 0.15     # pedal pressed this far
 
 
 @dataclass
@@ -189,6 +209,7 @@ class Config:
     external: ExternalObstacleConfig = field(default_factory=ExternalObstacleConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
+    wheel: WheelConfig = field(default_factory=WheelConfig)
 
     @property
     def active(self) -> Mode:

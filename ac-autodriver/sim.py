@@ -52,7 +52,9 @@ class Sim:
         self.rng = np.random.default_rng(seed)
         self.cfg, self.density = cfg, density
         self.planner = Planner(cfg)
-        self.pad = VirtualController(replace(cfg.controller, wake_on_connect=False), NullBackend())
+        # unscaled output: the car model below already is "planner steer 1.0 = 0.30 rad"
+        self.pad = VirtualController(replace(cfg.controller, wake_on_connect=False, output="xbox"),
+                                     NullBackend())
         self.x, self.y, self.yaw, self.v = 0.0, 1.5 * LANE_W, 0.0, 150 / 3.6
         self.damage, self.crashes, self.true_passes, self.t = 0.0, 0, 0, 0.0
         self.slip, self.dist, self.max_lat_g = 0.0, 0.0, 0.0

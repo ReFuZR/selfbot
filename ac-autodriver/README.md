@@ -1,67 +1,75 @@
 # ac-autodriver
 
 Autonomous highway driver for Assetto Corsa, for private / offline traffic sessions.
-It reads AC's telemetry, watches the road through a screen capture, and drives
-a virtual Xbox 360 controller.
+It reads AC's telemetry, watches the road through a screen capture, and drives a
+**virtual wheel (vJoy)** that sits next to your Logitech:
 
-> Status: telemetry, controller, vision, planner and simulator are done and self-tested.
-> `main.py` (the live driving loop with F8 / F12 hotkeys) is the next step.
+- **Engaged (F8):** the bot drives. Touch your wheel or a pedal and it hands control back.
+- **Paused:** your Logitech drives the car through the virtual wheel, 1:1, so you don't
+  have to switch control presets.
 
-## Install (once)
+## 1. Install (once)
 
-1. Put this folder anywhere, e.g. `C:\ac-autodriver`.
-2. Double-click **`install.bat`**.
-
-It installs everything it doesn't find:
+Put this folder anywhere (e.g. `C:\ac-autodriver`) and double-click **`install.bat`**.
+It installs what's missing and skips what's there:
 
 | Step | What |
 |---|---|
-| Python 3.11+ | Python 3.12, through `winget` (or python.org if winget is missing) |
-| ViGEmBus | the virtual gamepad driver. Windows asks for admin: click **Yes** |
-| Packages | numpy, opencv-python, mss, vgamepad, pynput, in a private `.venv` folder |
-| Self-tests | every module checks itself; no Assetto Corsa needed |
+| Python 3.12 | via `winget`, or python.org if winget is missing |
+| vJoy | the virtual wheel driver. Windows asks for admin and to trust the driver: **Yes / Install** |
+| Packages | numpy, opencv-python, mss, pynput, pygame, in a private `.venv` folder |
+| Self-tests | every module checks itself; no game needed |
+| Wheel setup | plug in your Logitech; it asks you to turn the wheel and press each pedal (~30 s) |
 
-It's safe to run again; finished steps are skipped. If something fails, send the window's text.
+## 2. Content Manager setup (once)
 
-## Use
+Make a **new controls preset** so your normal one stays untouched.
 
-Double-click **`run.bat`** for a menu:
+1. Content Manager: Settings, Assetto Corsa, Controls. Input method: **Wheel**.
+2. Double-click `run.bat` and pick **3 (Bind test)**. It moves the virtual wheel's
+   steering, then gas, then brake, 6 seconds each, over and over.
+3. In Content Manager click **Steering**, and wait for the STEER phase so vJoy's axis gets picked.
+   Do the same for **Throttle** (THROTTLE phase) and **Brake** (BRAKE phase).
+   Ctrl+C the bind test when done.
+4. Leave **gear shifting and all buttons on your Logitech** (paddles still work).
+5. Set the steering **degrees of rotation to the same as your Logitech** (usually 900), so
+   driving through pass-through feels the same as normal.
+6. **Automatic gearbox: on** (AC assists). The bot can't shift and won't engage without it.
+7. Save the preset, e.g. `autodriver`. Load your old preset to drive without the bot.
 
-1. **Telemetry monitor.** Sit in an AC practice session; speed, RPM and gear should match the game.
-2. **Controller bind test.** Sweeps steering, throttle and brake so you can bind them (below).
-3. **Vision: calibrate.** Writes `calibration.png` showing the road area it watches.
-4. **Vision: live view.** Debug window, lane offset, distance to cars per lane.
-5. **Simulator.** Compares the driving modes on a fake highway.
-6. **Self-tests.**
+Force feedback goes to the steering device, which is now vJoy, so your Logitech will
+feel limp in this preset. That's expected.
 
-## One-time game setup
+## 3. Calibrate vision (once)
 
-**Start the virtual pad before the session.** AC detects controllers when a session
-loads, so start option 2 (later, `main.py`) first, then launch the session.
+Use a hood or bumper camera. `run.bat` → **5** writes `calibration.png`. The red box
+(`roi` in `config.py`) must cover only road: bottom edge just above the hood, top edge
+just below the horizon. Edit the fractions, repeat, then check **6 (live view)** on a
+highway: lane offset goes negative when you're left of centre, and cars ahead show a
+distance.
 
-**Bind it.** In Content Manager: Settings, Assetto Corsa, Controls, pick the Xbox 360
-controller. With option 2 running, bind:
+## 4. Drive
 
-- steering to the left stick X axis
-- throttle to the right trigger
-- brake to the left trigger
+1. Load a highway with traffic in AC (practice / offline) using the `autodriver` preset.
+2. `run.bat` → **1**, pick a mode.
+3. Drive onto the highway yourself (pass-through), get into a lane, press **F8**.
 
-**Gamepad settings.** In the same screen, set steering speed sensitivity and steering
-filter to 0, gamma to 1, deadzone to 0. Otherwise AC adds its own damping on top
-of the planner's. Automatic gearbox: on.
+| Key | |
+|---|---|
+| **F8** | engage / pause |
+| **F9** | cycle mode: cruise, simple, madmax |
+| **F12** | kill: wheel centred, pedals up, program exits |
 
-**Calibrate vision.** Use a hood or bumper camera. Run option 3 and open
-`calibration.png`. The red box (`roi` in `config.py`) should cover only road:
-bottom edge just above the hood, top edge just below the horizon. Edit the
-fractions and repeat until it does, then check option 4 on a real highway.
+It pauses by itself when you touch the wheel or pedals, the game is paused, it
+crashes, vision loses the lanes, or the car is stuck. Every drive is logged to
+`logs\run-*.csv`; send me one if it misbehaves.
+
+If F8 does nothing while AC has focus, AC is probably running as administrator: run
+`run.bat` as administrator too.
 
 ## Modes
 
-Change one line at the top of `config.py`:
-
-```python
-MODE = "simple"   # "cruise" | "simple" | "madmax"
-```
+Pick in the menu, with F9, or with one line in `config.py` (`MODE = "simple"`).
 
 | Mode | Drives like |
 |---|---|
@@ -73,22 +81,29 @@ Score (our own model; AC can't read a server's score): passes x speed x combo,
 x2.5 for near misses, points per second above 150 km/h, -1000 per crash
 (`crash_resets_score = True` makes a crash wipe the run).
 
-## Tuning
+## First-drive tuning
 
-Everything is in `config.py`, with comments. The ones you'll most likely touch:
+Start in **cruise**. All settings are in `config.py`, with comments.
 
-- `roi`: the road area vision watches
-- `steer_gain` (per mode): steering too lazy or too twitchy
-- `slip_threshold` (per mode): drive hard into a corner with option 1 running, note
-  the `Slip` reading, and set it a bit below that
-- `obstacle_edge_score`: raise if vision sees phantom cars, lower if it misses real ones
+| Symptom | Change |
+|---|---|
+| turns lazily, drifts in the lane | raise `steer_output_scale` (0.55), or the mode's `steer_gain` |
+| weaves / oscillates | lower them |
+| hands control back by itself | raise `takeover_steer` / `takeover_pedal` (`WheelConfig`) |
+| phantom cars | raise `obstacle_edge_score`; missed cars: lower `obstacle_value_delta` |
+| slides in corners | lower the mode's `slip_threshold` (watch `slip` in the HUD in a hard corner) |
 
-Try changes in the simulator first: `run.bat`, option 5.
+Try planner changes in the simulator first (`run.bat` → 7).
+
+## Gamepad instead of a wheel
+
+Set `output = "xbox"` in `config.py` and run `install.bat -Xbox` (installs the ViGEmBus
+driver and vgamepad). Bind the Xbox 360 controller in a Gamepad preset; no pass-through.
 
 ## Known limits
 
-- **No rear view.** Vision only sees ahead (6-120 m). The planner remembers cars
-  that drop out of view beside it, but a faster car coming from behind is invisible.
-  This shows up when the car has been slowed below about 100 km/h and then pulls
-  out. Reading AC's virtual mirror as a second view would fix it.
+- **No rear view.** Vision only sees ahead (6-120 m). The planner remembers cars that
+  drop out of view beside it, but a faster car coming from behind is invisible. This
+  shows up when the car has been slowed below about 100 km/h and then pulls out.
 - Distances from vision are rough until calibrated (`near_distance_m`, `far_distance_m`).
+- Nothing has run in the real game yet; expect the first drives to need the tuning above.

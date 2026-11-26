@@ -1,8 +1,10 @@
-# Python 3.11+ on Windows
-# telemetry.py uses only the standard library (ctypes) - nothing to install for it.
+# Python 3.11+ on Windows. install.bat installs all of this (and the vJoy driver) for you.
+# telemetry.py uses only the standard library.
 
 numpy>=1.26          # vision math
 opencv-python>=4.9   # lane / obstacle detection
 mss>=9.0             # fast screen capture
-vgamepad>=0.1.0      # virtual Xbox 360 pad (needs the ViGEmBus driver installed)
-pynput>=1.7.6        # global hotkeys (F8 toggle, F12 kill-switch)
+pynput>=1.7.6        # global hotkeys (F8 engage, F9 mode, F12 kill)
+pygame>=2.5          # reads your physical Logitech wheel / pedals
+
+# Only for output = "xbox" (install.bat -Xbox):  vgamepad>=0.1.0
