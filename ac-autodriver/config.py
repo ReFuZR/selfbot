@@ -159,7 +159,10 @@ class VisionConfig:
     # Perspective distance: d = k / (y - horizon); pinned by these two points
     near_distance_m: float = 8.0            # at the bottom row of the ROI (uncalibrated)
     far_distance_m: float = 120.0           # at the top row of the ROI
-    max_fps: float = 60.0                   # cap capture rate so AC keeps its CPU
+    # Screen capture: "auto" = dxcam (GPU desktop duplication, ~1-2 ms) if installed, else mss
+    # (GDI, ~5-15 ms, may see a black screen in exclusive fullscreen). "dxcam" / "mss" to force.
+    capture_backend: str = "auto"
+    max_fps: float = 144.0                  # vision rate cap; frames only count when the screen changed
     debug_window: bool = False              # cv2.imshow overlay (costs a few ms)
 
 

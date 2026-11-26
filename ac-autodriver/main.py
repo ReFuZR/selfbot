@@ -223,10 +223,14 @@ class Driver:
                            for k, v in p.zones.items())
             off = "--" if p.lanes.offset is None else f"{p.lanes.offset:+.2f}"
             fps = getattr(self.vision, "fps", 0.0)
-            lines.append(f"vision  {fps:3.0f} fps  lane {off} conf {p.lanes.confidence:.2f}   {zs}")
+            age = (time.perf_counter() - p.t) * 1000
+            lines.append(f"vision  {fps:3.0f} fps  grab {getattr(self.vision, 'grab_ms', 0):3.1f}ms "
+                         f"proc {getattr(self.vision, 'proc_ms', 0):3.1f}ms  frame age {age:3.0f}ms  "
+                         f"lane {off} conf {p.lanes.confidence:.2f}   {zs}")
         else:
             err = getattr(self.vision, "error", None)
             lines.append(f"vision  no frames{f' ({err})' if err else ''}")
+        lines.append(f"capture {getattr(self.vision, 'backend', '-')}")
         lines.append(f"score   {sc.total:9,.0f}  combo x{sc.combo} ({sc.combo_left(now):3.1f}s)  "
                      f"passes {sc.passes}  near {sc.near_misses}  cuts {sc.cuts}  swerves {sc.swerves}  "
                      f"crashes {sc.crashes}  best {sc.best:,.0f}")

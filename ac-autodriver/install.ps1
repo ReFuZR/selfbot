@@ -3,7 +3,7 @@
 #
 #   1. Python 3.11+        (installs Python 3.12 with winget, or from python.org)
 #   2. vJoy driver         (the virtual wheel the bot drives; your Logitech stays as it is)
-#   3. .venv + packages    (numpy, opencv-python, mss, pynput, pygame)
+#   3. .venv + packages    (numpy, opencv-python, mss, dxcam, pynput, pygame)
 #   4. self-tests          (every module checks itself; no AC needed)
 #   5. wheel setup         (learn your Logitech's axes, ~30 s)
 #
@@ -157,6 +157,9 @@ if ($Xbox) {
     & $venvPy -m pip install 'vgamepad>=0.1.0' --disable-pip-version-check
     if ($LASTEXITCODE -ne 0) { Warn 'vgamepad install failed' }
 }
+# dxcam: fast GPU screen capture. Optional - without it vision falls back to mss.
+& $venvPy -m pip install 'dxcam>=0.0.5' --disable-pip-version-check
+if ($LASTEXITCODE -ne 0) { Warn 'dxcam (fast capture) failed to install - vision will use the slower mss' }
 Ok 'packages installed'
 
 # --------------------------------------------------------------------------- 4

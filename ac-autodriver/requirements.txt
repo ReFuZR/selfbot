@@ -3,7 +3,8 @@
 
 numpy>=1.26          # vision math
 opencv-python>=4.9   # lane / obstacle detection
-mss>=9.0             # fast screen capture
+mss>=9.0             # screen capture fallback (GDI)
+# dxcam>=0.0.5       # fast GPU screen capture - installed separately by install.bat (optional)
 pynput>=1.7.6        # global hotkeys (F8 engage, F9 mode, F12 kill)
 pygame>=2.5          # reads your physical Logitech wheel / pedals
 

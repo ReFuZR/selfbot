@@ -212,6 +212,8 @@ def main() -> int:
                       f"cars {row['n_obs']}  bot: {cmd.state} {planner.why[:50]:<50}", end="", flush=True)
                 time.sleep(1 / 60)
         vt.stop()
+        summary.append(f"capture: {vt.backend}, grab {vt.grab_ms:.1f} ms, "
+                       f"process {vt.proc_ms:.1f} ms")
         if vt.error:
             summary.append(f"vision error: {vt.error!r}")
         summary += ["", "CAPTURE"] + summarize_capture(rows, why, states)

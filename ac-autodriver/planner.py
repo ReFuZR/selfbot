@@ -487,7 +487,8 @@ class Planner:
         if now - self.lanes_t > self.LOST_LANES_S:      # re-acquired: no derivative kick
             self.y, self.y_rate = y, 0.0
         else:
-            self.y_rate += 0.35 * ((y - self.y) / dt - self.y_rate)
+            a = 1 - (1 - 0.35) ** (dt * 60)          # same filtering at any loop rate
+            self.y_rate += a * ((y - self.y) / dt - self.y_rate)
             self.y = y
         self.lanes_t = now
 

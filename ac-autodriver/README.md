@@ -17,7 +17,7 @@ It installs what's missing and skips what's there:
 |---|---|
 | Python 3.12 | via `winget`, or python.org if winget is missing |
 | vJoy | the virtual wheel driver. Windows asks for admin and to trust the driver: **Yes / Install** |
-| Packages | numpy, opencv-python, mss, pynput, pygame, in a private `.venv` folder |
+| Packages | numpy, opencv-python, mss, dxcam (fast GPU capture), pynput, pygame, in a private `.venv` folder |
 | Self-tests | every module checks itself; no game needed |
 | Wheel setup | plug in your Logitech; it asks you to turn the wheel and press each pedal (~30 s) |
 
@@ -42,7 +42,10 @@ feel limp in this preset. That's expected.
 
 ## 3. Calibrate vision (once)
 
-Use a hood or bumper camera. `run.bat` → **5** writes `calibration.png`. The red box
+Use a hood or bumper camera. Screen capture uses the GPU (dxcam, ~1-2 ms a frame, up to
+144 fps); the HUD's `capture` line says which method is in use. If vision only ever sees
+black, set AC's display mode to windowed / borderless fullscreen (AC: Video settings).
+ `run.bat` → **5** writes `calibration.png`. The red box
 (`roi` in `config.py`) must cover only road: bottom edge just above the hood, top edge
 just below the horizon. Edit the fractions, repeat, then check **6 (live view)** on a
 highway: lane offset goes negative when you're left of centre, and cars ahead show a

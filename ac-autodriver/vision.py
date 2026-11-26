@@ -305,7 +305,9 @@ def roi_rect(monitor: dict, cfg: VisionConfig) -> dict:
 
 
 class ScreenCapture:
-    """mss grabber for just the ROI. Create it on the thread that uses it (mss is per-thread)."""
+    """mss (GDI) grabber for just the ROI: works everywhere, ~5-15 ms a grab, and may show a
+    black / frozen image of a game in exclusive fullscreen. Create it on the thread that uses it."""
+    name = "mss"
 
     def __init__(self, cfg: VisionConfig) -> None:
         import mss
@@ -314,16 +316,73 @@ class ScreenCapture:
         self.rect = roi_rect(self.monitor, cfg)
 
     def grab(self, rect: dict | None = None) -> np.ndarray:
-        return np.asarray(self._sct.grab(rect or self.rect))[..., :3]  # BGRA -> BGR view
+        # convert the whole BGRA buffer: a [..., :3] view is strided, which OpenCV dislikes
+        return cv2.cvtColor(np.asarray(self._sct.grab(rect or self.rect)), cv2.COLOR_BGRA2BGR)
+
+    def grab_full(self) -> np.ndarray:
+        return self.grab(self.monitor)
 
     def close(self) -> None:
         self._sct.close()
 
 
+class DXCamCapture:
+    """DXGI Desktop Duplication (dxcam): frames straight from the GPU, ~1-2 ms a grab, 100+ fps,
+    and sees games that GDI can't. grab() returns None when the screen hasn't changed since
+    the last grab, so we never re-process an identical frame. Windows only."""
+    name = "dxcam"
+
+    def __init__(self, cfg: VisionConfig) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("dxcam is Windows-only")
+        import dxcam
+        cam = dxcam.create(output_idx=max(cfg.monitor_index - 1, 0), output_color="BGR")
+        if cam is None:
+            raise RuntimeError(f"no DXGI output for monitor {cfg.monitor_index}")
+        self._cam = cam
+        self.monitor = {"left": 0, "top": 0, "width": cam.width, "height": cam.height}
+        self.rect = roi_rect(self.monitor, cfg)
+
+    def _region(self, r: dict) -> tuple[int, int, int, int]:
+        w, h = self.monitor["width"], self.monitor["height"]
+        x0, y0 = min(max(r["left"], 0), w - 1), min(max(r["top"], 0), h - 1)
+        return x0, y0, min(x0 + r["width"], w), min(y0 + r["height"], h)
+
+    def grab(self, rect: dict | None = None) -> np.ndarray | None:
+        return self._cam.grab(region=self._region(rect or self.rect))
+
+    def grab_full(self) -> np.ndarray | None:
+        return self.grab(self.monitor)
+
+    def close(self) -> None:
+        try:
+            self._cam.release()
+        except Exception:
+            pass
+
+
+def make_capture(cfg: VisionConfig):
+    """Fastest capture available: dxcam, else mss. The chosen one's .note says why."""
+    if cfg.capture_backend in ("auto", "dxcam"):
+        try:
+            cap = DXCamCapture(cfg)
+            cap.note = "GPU desktop duplication"
+            return cap
+        except Exception as e:
+            if cfg.capture_backend == "dxcam":
+                raise
+            reason = f"dxcam unavailable ({type(e).__name__}: {e})"
+    else:
+        reason = "chosen in config"
+    cap = ScreenCapture(cfg)
+    cap.note = reason
+    return cap
+
+
 class VisionThread:
     """Captures + processes continuously; the control loop reads latest() / poll()."""
 
-    def __init__(self, cfg: VisionConfig | None = None, capture_factory=ScreenCapture) -> None:
+    def __init__(self, cfg: VisionConfig | None = None, capture_factory=make_capture) -> None:
         self.cfg = cfg or CONFIG.vision
         self._factory = capture_factory
         self._lock = threading.Lock()
@@ -332,6 +391,8 @@ class VisionThread:
         self._thread: threading.Thread | None = None
         self.error: BaseException | None = None
         self.fps = 0.0
+        self.grab_ms = self.proc_ms = 0.0     # smoothed timings, for the HUD
+        self.backend = "-"
 
     def start(self) -> "VisionThread":
         self._stop.clear()
@@ -350,18 +411,26 @@ class VisionThread:
         except BaseException as e:      # e.g. bad monitor index
             self.error = e
             return
+        self.backend = f"{getattr(cap, 'name', '?')} ({getattr(cap, 'note', '')})"
         proc, period = VisionProcessor(self.cfg), 1.0 / max(self.cfg.max_fps, 1.0)
         n, t_fps = 0, time.perf_counter()
         try:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
                 try:
-                    result = proc.process(cap.grab(), t=t0)
+                    frame = cap.grab()
+                    if frame is None:               # screen unchanged since last grab: wait for a new one
+                        self._stop.wait(0.001)
+                        continue
+                    t1 = time.perf_counter()
+                    result = proc.process(frame, t=t0)
                     self.error = None
                 except Exception as e:  # keep running; latest() goes stale and planner reacts
                     self.error = e
                     time.sleep(0.1)
                     continue
+                self.grab_ms += 0.1 * ((t1 - t0) * 1000 - self.grab_ms)
+                self.proc_ms += 0.1 * (result[0].process_ms - self.proc_ms)
                 with self._lock:
                     self._latest = result
                 n += 1
@@ -511,6 +580,71 @@ def selftest() -> int:
     ms = sorted(times)[len(times) // 2]
     check(ms < 12, f"too slow: {ms:.1f} ms")
 
+    # dxcam backend with a fake driver: region maths, None = no new frame, thread + release
+    import types
+    calls: list = []
+
+    class FakeCam:
+        width, height = 1920, 1080
+
+        def __init__(self):
+            self.n = 0
+
+        def grab(self, region):
+            calls.append(region)
+            self.n += 1
+            if self.n % 2 == 0:
+                return None                      # screen unchanged
+            x0, y0, x1, y1 = region
+            return cv2.resize(synth_road(cars=[(0, 150)], seed=self.n), (x1 - x0, y1 - y0))
+
+        def release(self):
+            calls.append("released")
+
+    saved = sys.platform, sys.modules.get("dxcam"), globals()["ScreenCapture"]
+    sys.platform = "win32"
+    sys.modules["dxcam"] = types.SimpleNamespace(create=lambda output_idx, output_color: FakeCam())
+    try:
+        cap = make_capture(cfg)
+        check(cap.name == "dxcam" and cap.rect == {"left": 384, "top": 486, "width": 1152, "height": 291},
+              f"dxcam rect {getattr(cap, 'rect', None)}")
+        f1, f2 = cap.grab(), cap.grab()
+        check(f1 is not None and f1.shape == (291, 1152, 3) and f2 is None, "dxcam frame / no-new-frame")
+        check(calls[0] == (384, 486, 1536, 777), f"dxcam region {calls[0]}")
+        cap.close()
+        calls.clear()
+        vt = VisionThread(replace(cfg, max_fps=500)).start()
+        deadline = time.perf_counter() + 2
+        while vt.latest() is None and time.perf_counter() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        check([o.zone for o in vt.poll()] == ["center"] and vt.backend.startswith("dxcam"), "thread on dxcam")
+        n_grabs = sum(1 for c in calls if c != "released")
+        check(vt.fps <= n_grabs, "None frames are not processed")
+        vt.stop()
+        check("released" in calls, "dxcam released on stop")
+
+        # dxcam missing -> falls back to mss and says why; forced dxcam -> error
+        class FakeMss:
+            name = "mss"
+            def __init__(self, cfg): pass
+        globals()["ScreenCapture"] = FakeMss
+        sys.modules["dxcam"] = None              # import dxcam -> ImportError
+        cap = make_capture(cfg)
+        check(cap.name == "mss" and "dxcam unavailable" in cap.note, f"fallback: {getattr(cap, 'note', '')}")
+        try:
+            make_capture(replace(cfg, capture_backend="dxcam"))
+            fails.append("forced dxcam should raise when missing")
+        except ImportError:
+            pass
+    finally:
+        sys.platform = saved[0]
+        if saved[1] is None:
+            sys.modules.pop("dxcam", None)
+        else:
+            sys.modules["dxcam"] = saved[1]
+        globals()["ScreenCapture"] = saved[2]
+
     # summarize merges multiple sources; roi_rect math
     z = summarize([Obstacle("left", 50), Obstacle("left", 30, source="csp"), Obstacle("right", 80)])
     check(z["left"].nearest_m == 30 and z["left"].count == 2 and z["center"].count == 0, "summarize")
@@ -532,9 +666,18 @@ def _crop_roi(full: np.ndarray, cfg: VisionConfig) -> np.ndarray:
 
 
 def calibrate(cfg: VisionConfig, path: str = "calibration.png") -> int:
-    cap = ScreenCapture(cfg)
-    full = cap.grab(cap.monitor).copy()
+    cap = make_capture(cfg)
+    full, t_end = None, time.perf_counter() + 2.0
+    while full is None and time.perf_counter() < t_end:   # dxcam: None until the screen changes
+        full = cap.grab_full()
+        if full is None:
+            time.sleep(0.01)
     cap.close()
+    if full is None:
+        print("No screen frame in 2 s - is the game running and visible?")
+        return 1
+    full = full.copy()
+    print(f"captured with {cap.name} ({cap.note})")
     r = roi_rect({"left": 0, "top": 0, "width": full.shape[1], "height": full.shape[0]}, cfg)
     x, y, w, h = r["left"], r["top"], r["width"], r["height"]
     cv2.rectangle(full, (x, y), (x + w, y + h), (0, 0, 255), 3)
@@ -587,7 +730,7 @@ def main() -> int:
             zs = " ".join(f"{z[0].upper()}:{'--' if math.isinf(s.nearest_m) else f'{s.nearest_m:4.0f}m'}"
                           for z, s in p.zones.items())
             off = "  --" if p.lanes.offset is None else f"{p.lanes.offset:+.2f}"
-            print(f"\r{vt.fps:4.0f} fps {p.process_ms:4.1f} ms | lane off {off} conf "
+            print(f"\r{vt.backend.split()[0]} {vt.fps:4.0f} fps grab {vt.grab_ms:4.1f} ms proc {vt.proc_ms:4.1f} ms | lane off {off} conf "
                   f"{p.lanes.confidence:.2f} | {zs}   ", end="", flush=True)
     except KeyboardInterrupt:
         print()
