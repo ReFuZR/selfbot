@@ -1,0 +1,267 @@
+"""
+config.py - every tunable in one place.
+
+Most people only change MODE. Each mode is a preset of how hard the car drives;
+tweak a preset below or add your own. Everything else is plumbing you tune once.
+Values are starting points: try them in sim.py, then on an empty road in AC.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+MODE = "simple"   # "cruise" | "simple" | "madmax"   (override with  python main.py --mode madmax)
+
+
+@dataclass
+class Mode:
+    description: str
+    target_kmh: float            # cruise speed with a clear lane
+    follow_base_m: float         # braking distance = follow_base_m + follow_per_kmh_m * speed
+    follow_per_kmh_m: float
+    overtake_factor: float       # start a lane change at this x braking distance (lower = later swerve)
+    min_gap_m: float             # target lane must be clear at least this far ahead
+    cut_gap_m: float             # bumper gap we'll accept moving in front of a car we just passed
+    cut_back: bool               # weave back in front of cars we pass, for cut points
+    brake_commit: float          # share of full braking we count on when judging a gap (higher = riskier)
+    swerve_margin_s: float       # mid-swerve, only brake if we'd reach the car ahead within
+                                 # (time to clear it sideways + this). Lower = riskier swerves
+    lane_change_s: float         # time to move one lane over
+    cooldown_s: float            # minimum time between lane changes
+    hug: float                   # lean toward cars being passed (half-lane widths): closer = more points
+    steer_gain: float            # overall steering aggressiveness
+    slip_threshold: float        # wheelSlip above this trims throttle / steering (calibrate in AC)
+    trust_empty_lanes: bool = False  # True: a lane that looks empty IS empty (vision sees ~120 m).
+                                     # Allows cuts at full speed; a car just out of view = crash.
+
+
+MODES: dict[str, Mode] = {
+    "cruise": Mode("Relaxed, safe gaps, only changes lane when blocked. Scores, but doesn't chase.",
+                   target_kmh=180, follow_base_m=30, follow_per_kmh_m=0.70, overtake_factor=1.6,
+                   min_gap_m=45, cut_gap_m=25, cut_back=False, brake_commit=0.5, swerve_margin_s=1.0,
+                   lane_change_s=3.0, cooldown_s=6.0, hug=0.0, steer_gain=0.9, slip_threshold=2.5),
+    "simple": Mode("Simple scoring: high speed and clean overtakes for pass + speed points.",
+                   target_kmh=250, follow_base_m=22, follow_per_kmh_m=0.50, overtake_factor=1.4,
+                   min_gap_m=30, cut_gap_m=25, cut_back=False, brake_commit=0.6, swerve_margin_s=0.6,
+                   lane_change_s=2.2, cooldown_s=2.5, hug=0.0, steer_gain=1.0, slip_threshold=3.0),
+    "madmax": Mode("Max out the score: flat out, late swerves, squeezes past traffic about 0.6 m "
+                   "away for proximity points, cuts back in tight in front of cars it passes.",
+                   target_kmh=300, follow_base_m=20, follow_per_kmh_m=0.36, overtake_factor=0.9,
+                   min_gap_m=18, cut_gap_m=4, cut_back=True, brake_commit=0.9, swerve_margin_s=0.5,
+                   lane_change_s=2.0, cooldown_s=2.0, hug=0.8, steer_gain=1.2, slip_threshold=3.4),
+}
+
+
+@dataclass
+class ScoreConfig:
+    """Our own score model (AC's shared memory can't read a server/CSP script score).
+    The closer you get, the more it pays."""
+    pass_points: float = 100.0       # per car passed, x (speed / 100 km/h) x combo x proximity
+    # proximity: x (ref_gap / side gap), capped. Side gap estimated from lane width, car width
+    # and how far we lean toward the car: centred in both lanes = ref_gap = x1
+    proximity_ref_gap_m: float = 1.8
+    proximity_max_mult: float = 5.0
+    near_miss_gap_m: float = 1.2     # passes closer than this are called near misses
+    lane_width_m: float = 3.7
+    car_width_m: float = 1.9
+    cut_points: float = 150.0        # moving in front of a car you passed: x (cut_ref / gap) x combo
+    cut_ref_m: float = 15.0          # only cuts tighter than this score
+    swerve_points: float = 100.0     # pulling out from behind a car: x (swerve_ref / distance) x combo
+    swerve_ref_m: float = 30.0       # only swerves later than this score
+    pass_trigger_m: float = 15.0     # a side car must get this close to count as being passed
+    speed_floor_kmh: float = 150.0   # speed points accrue above this
+    speed_points_per_s: float = 10.0 # per second, per 100 km/h above the floor
+    combo_window_s: float = 6.0      # score again within this to grow the combo
+    combo_max: int = 10
+    crash_penalty: float = 1000.0
+    crash_resets_score: bool = False # True = No-Hesi style: a crash wipes the run
+
+
+@dataclass
+class LoopConfig:
+    hz: float = 60.0                 # control loop rate
+    hud_hz: float = 10.0             # terminal HUD refresh rate
+
+
+@dataclass
+class SpeedConfig:
+    """Cruise PID on speed error (km/h). Output in [-1, 1]: >0 throttle, <0 brake."""
+    kp: float = 0.045
+    ki: float = 0.006
+    kd: float = 0.010
+    integral_limit: float = 0.35     # anti-windup clamp on the I term (output units)
+    brake_deadband_kmh: float = 6.0  # no PID braking until this far OVER target (coast instead)
+    throttle_slew_per_s: float = 2.5 # max throttle change per second
+    brake_slew_per_s: float = 5.0
+    brake_decel_mps2: float = 10.0  # what full brake achieves at speed (GT cars ~12-15). Used to
+                                    # brake on time-to-impact and size safe overtaking gaps.
+
+
+@dataclass
+class SteerConfig:
+    """Lateral PD on lane offset (half-lane widths; vision reports it)."""
+    kp: float = 0.12                 # per half-lane of position error
+    kd: float = 0.09                 # per half-lane/s of lateral speed
+    k_heading: float = 0.0           # feed-forward on vision lane heading (curvy roads: try 0.2)
+    max_steer: float = 1.0
+    # cap on steering authority (after steer_gain, before speed damping) = a lateral-g limit,
+    # since the damping keeps lateral response ~constant at speed. 0.15 ~ 1.1 g in sim.py's car.
+    # Car spins or slides on lane changes: lower it. Can't change lane fast enough: raise it.
+    lat_limit: float = 0.15
+    # speed damping: steer *= 1 / (1 + (speed / ref) ** exponent); exponent 2 keeps the
+    # car's lateral response roughly constant above ref (lateral accel grows with v^2)
+    damp_ref_kmh: float = 90.0
+    damp_exponent: float = 2.0
+    min_steer_scale: float = 0.03
+    slew_per_s: float = 3.0          # max steer change per second at low speed...
+    slew_high_speed_per_s: float = 1.0   # ...and at/above 2x damp_ref_kmh
+
+
+@dataclass
+class StabilityConfig:
+    """Throttle/steer trim when wheelSlip exceeds the mode's slip_threshold."""
+    slip_trim_gain: float = 0.12     # throttle removed per unit of slip over threshold
+    max_trim: float = 0.60
+    steer_trim_gain: float = 0.08    # steer reduction per unit of slip over threshold
+    recover_per_s: float = 1.5
+
+
+@dataclass
+class VisionConfig:
+    """mss + OpenCV. Rectangles are fractions (left, top, right, bottom) so they survive
+    resolution changes. Calibrate with the README procedure."""
+    monitor_index: int = 1           # mss monitor (1 = primary)
+    capture_region: tuple[float, float, float, float] | None = None  # None = full monitor
+    roi: tuple[float, float, float, float] = (0.20, 0.45, 0.80, 0.72)  # road ahead of the hood
+    zone_split: tuple[float, float] = (0.33, 0.67)  # ROI x-fractions: left | center | right
+    downscale_width: int = 480       # ROI is resized to this width before processing
+
+    # Lane lines
+    white_thresh: int = 200
+    yellow_hsv_lo: tuple[int, int, int] = (15, 80, 120)
+    yellow_hsv_hi: tuple[int, int, int] = (35, 255, 255)
+    canny_lo: int = 60
+    canny_hi: int = 150
+    hough_threshold: int = 25
+    hough_min_len: int = 20
+    hough_max_gap: int = 12
+
+    car_center_x: float = 0.5        # where the car's centreline sits across the ROI (0..1)
+
+    # Obstacles: blobs that differ from the road colour sampled just ahead of the hood
+    obstacle_value_delta: int = 40          # brightness difference from road to count
+    obstacle_sat_delta: int = 60            # saturation above road (coloured paint, tail lights)
+    obstacle_min_area_frac: float = 0.004   # of ROI area
+    # Edge pixels inside a blob's box per pixel of box perimeter (sides on the ROI border
+    # excluded). Scale-free: a crisp outline alone scores ~1, cars with glass / lights /
+    # plates score 1.3+, shadows 0-0.4. Raise if you get phantom obstacles.
+    obstacle_edge_score: float = 0.7
+    # Perspective distance: d = k / (y - horizon); pinned by these two points
+    near_distance_m: float = 8.0            # at the bottom row of the ROI (uncalibrated)
+    far_distance_m: float = 120.0           # at the top row of the ROI
+    # Screen capture: "auto" = dxcam (GPU desktop duplication, ~1-2 ms) if installed, else mss
+    # (GDI, ~5-15 ms, may see a black screen in exclusive fullscreen). "dxcam" / "mss" to force.
+    capture_backend: str = "auto"
+    max_fps: float = 144.0                  # vision rate cap; frames only count when the screen changed
+    debug_window: bool = False              # cv2.imshow overlay (costs a few ms)
+
+
+@dataclass
+class ExternalObstacleConfig:
+    """Optional feed from a Custom Shaders Patch Lua script over UDP (later)."""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 9996
+    max_age_s: float = 0.25          # drop obstacle packets older than this
+
+
+@dataclass
+class ControllerConfig:
+    # "wheel": vJoy virtual wheel. In Content Manager bind steering / gas / brake to vJoy and
+    #          keep your Logitech for buttons; while paused your Logitech drives through it.
+    # "xbox":  virtual Xbox 360 pad (vgamepad) for a gamepad controls preset.
+    output: str = "wheel"
+    vjoy_device: int = 1
+    # Planner steer -> virtual wheel axis. The planner was tuned for ~0.30 rad of front-wheel
+    # angle at full command; a 900-degree wheel range gives ~0.55 rad at full axis on most
+    # cars, hence ~0.55. Car turns too lazily: raise it. Weaves: lower it.
+    steer_output_scale: float = 0.55
+    # |steer| below this is snapped to 0. Keep it tiny: at 250 km/h the speed-damped
+    # corrections are only 0.005-0.02, and a bigger deadzone deletes them.
+    steer_deadzone: float = 0.002
+    trigger_deadzone: float = 0.02   # same for throttle / brake
+    # AC's own gamepad deadzone (Content Manager -> Controls -> steering "deadzone"). Non-zero
+    # steer output is rescaled to start just past it. Set to the same value you set in-game.
+    steer_game_deadzone: float = 0.0
+    # Tap the A button once on connect. Only for binding screens that ignore an idle pad;
+    # off by default because A may be bound to something in-game.
+    wake_on_connect: bool = False
+    steer_smoothing: float = 0.35    # EMA alpha per 60 Hz frame (1 = no smoothing)
+    throttle_smoothing: float = 0.50
+    brake_smoothing: float = 0.50
+    invert_steer: bool = False
+
+
+@dataclass
+class HotkeyConfig:
+    toggle: str = "f8"               # engage / pause   (pynput key names)
+    kill: str = "f12"                # zero all axes and exit immediately
+    mode: str = "f9"                 # cycle cruise -> simple -> madmax
+    record: str = "f7"               # start / stop recording your lane as the path
+
+
+@dataclass
+class WheelConfig:
+    """Your physical Logitech wheel (read with pygame). Set up once: run.bat -> wheel setup."""
+    calibration_file: str = "wheel_calibration.json"
+    passthrough: bool = True         # paused: your wheel/pedals drive the car through vJoy, 1:1
+    takeover: bool = True            # engaged: touching the wheel or pedals hands control back
+    takeover_steer: float = 0.04     # wheel moved this fraction of full range (~18 deg on 900)
+    takeover_pedal: float = 0.15     # pedal pressed this far
+
+
+@dataclass
+class DriveConfig:
+    """Steering from AC's own data, recorded paths, and gear shifting."""
+    # steering model: learned from your driving (curvature per unit of steering axis)
+    learn_seconds: float = 3.0       # seconds of real steering it needs before it may drive
+    steer_models_file: str = "steer_models.json"   # learned per car, reused next time
+    # recorded paths (F7): your lane, from AC's world coordinates
+    paths_dir: str = "paths"
+    lane_width_m: float = 3.7
+    record_spacing_m: float = 2.0
+    curve_lookahead_s: float = 0.3   # how far ahead to read the path's curve (covers steering lag)
+    # gears: when AC's automatic gearbox is off, the bot shifts with vJoy buttons
+    # (bind Gear Up / Gear Down to vJoy buttons 1 / 2 in Content Manager)
+    upshift_button: int = 1
+    downshift_button: int = 2
+    upshift_rpm_frac: float = 0.93   # of max rpm
+    downshift_rpm_frac: float = 0.55
+    shift_press_s: float = 0.08
+    shift_interval_s: float = 0.7
+
+
+@dataclass
+class Config:
+    mode: str = MODE
+    modes: dict[str, Mode] = field(default_factory=lambda: dict(MODES))
+    score: ScoreConfig = field(default_factory=ScoreConfig)
+    loop: LoopConfig = field(default_factory=LoopConfig)
+    speed: SpeedConfig = field(default_factory=SpeedConfig)
+    steer: SteerConfig = field(default_factory=SteerConfig)
+    stability: StabilityConfig = field(default_factory=StabilityConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
+    external: ExternalObstacleConfig = field(default_factory=ExternalObstacleConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
+    hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
+    wheel: WheelConfig = field(default_factory=WheelConfig)
+    drive: DriveConfig = field(default_factory=DriveConfig)
+
+    @property
+    def active(self) -> Mode:
+        if self.mode not in self.modes:
+            raise ValueError(f"unknown mode {self.mode!r}; choose from {', '.join(self.modes)}")
+        return self.modes[self.mode]
+
+
+CONFIG = Config()

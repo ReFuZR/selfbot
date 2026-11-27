@@ -1,0 +1,11 @@
+# Python 3.11+ on Windows. install.bat installs all of this (and the vJoy driver) for you.
+# telemetry.py uses only the standard library.
+
+numpy>=1.26          # vision math
+opencv-python>=4.9   # lane / obstacle detection
+mss>=9.0             # screen capture fallback (GDI)
+# dxcam>=0.0.5       # fast GPU screen capture - installed separately by install.bat (optional)
+pynput>=1.7.6        # global hotkeys (F8 engage, F9 mode, F12 kill)
+pygame>=2.5          # reads your physical Logitech wheel / pedals
+
+# Only for output = "xbox" (install.bat -Xbox):  vgamepad>=0.1.0
